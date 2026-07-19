@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f6b3f" />
+  <title>E4U HR & Payroll Cloud System</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="authScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark">E4U</div>
+        <div>
+          <h1>HR & Payroll Cloud</h1>
+          <p>Login + Supabase Database</p>
+        </div>
+      </div>
+      <div id="configWarning" class="alert warning hidden">
+        Supabase is not configured yet. Open <strong>config.js</strong> and paste your Project URL and anon key.
+      </div>
+      <div class="tabs">
+        <button class="tab active" id="loginTab" onclick="setAuthMode('login')">Login</button>
+        <button class="tab" id="signupTab" onclick="setAuthMode('signup')">Create Account</button>
+      </div>
+      <form id="authForm" onsubmit="handleAuthSubmit(event)">
+        <label id="fullNameWrap" class="hidden">Full Name
+          <input type="text" id="authFullName" placeholder="Juan Dela Cruz" />
+        </label>
+        <label>Email
+          <input type="email" id="authEmail" placeholder="admin@company.com" required />
+        </label>
+        <label>Password
+          <input type="password" id="authPassword" placeholder="Minimum 6 characters" required minlength="6" />
+        </label>
+        <button class="btn primary full" id="authSubmitBtn" type="submit">Login</button>
+      </form>
+      <p class="small center">First registered user will become <strong>Super Admin</strong>.</p>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">E4U</div>
+        <div>
+          <h1>HR & Payroll</h1>
+          <p>v2 Cloud</p>
+        </div>
+      </div>
+
+      <div class="user-card">
+        <strong id="currentUserName">User</strong>
+        <span id="currentUserRole">Role</span>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="company">Company Profile</button>
+        <button class="nav-item" data-view="employees">Employee Masterfile</button>
+        <button class="nav-item" data-view="users">Users & Roles</button>
+        <button class="nav-item" data-view="schedule">Scheduling</button>
+        <button class="nav-item" data-view="attendance">Timekeeping / DTR</button>
+        <button class="nav-item" data-view="leave">Leave Management</button>
+        <button class="nav-item" data-view="payroll">Payroll</button>
+        <button class="nav-item" data-view="payslips">Payslips</button>
+        <button class="nav-item" data-view="reports">Reports</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <p>Connected to Supabase</p>
+        <button class="btn ghost full" id="syncBtn" onclick="loadAllData()">Sync Now</button>
+        <button class="btn danger full" onclick="logout()">Logout</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Unified HR • Timekeeping • Payroll</p>
+          <h2 id="pageTitle">Dashboard</h2>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn secondary" onclick="exportBackupJSON()">Backup JSON</button>
+          <button class="btn secondary" onclick="loadAllData()">Refresh</button>
+          <button class="btn primary" onclick="window.print()">Print</button>
+        </div>
+      </header>
+
+      <section class="view active" id="dashboardView"></section>
+      <section class="view" id="companyView"></section>
+      <section class="view" id="employeesView"></section>
+      <section class="view" id="usersView"></section>
+      <section class="view" id="scheduleView"></section>
+      <section class="view" id="attendanceView"></section>
+      <section class="view" id="leaveView"></section>
+      <section class="view" id="payrollView"></section>
+      <section class="view" id="payslipsView"></section>
+      <section class="view" id="reportsView"></section>
+      <section class="view" id="settingsView"></section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" class="modal-card" onsubmit="event.preventDefault()">
+      <div class="modal-header">
+        <h3 id="modalTitle">Modal</h3>
+        <button class="icon-btn" value="cancel" onclick="closeModal()" aria-label="Close">×</button>
+      </div>
+      <div id="modalBody"></div>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

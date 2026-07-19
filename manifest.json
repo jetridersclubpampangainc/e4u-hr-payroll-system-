@@ -1,0 +1,12 @@
+{
+  "name": "E4U HR & Payroll Management System",
+  "short_name": "E4U HR",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#0f6b3f",
+  "description": "Prototype HR, timekeeping, scheduling, payroll, leave and payslip system.",
+  "icons": [
+    { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

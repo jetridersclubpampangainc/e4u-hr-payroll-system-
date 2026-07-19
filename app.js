@@ -1,0 +1,887 @@
+const cfg = window.E4U_SUPABASE_CONFIG || {};
+const CONFIGURED = cfg.url && cfg.anonKey && !cfg.url.includes('PASTE_') && !cfg.anonKey.includes('PASTE_');
+const ROLE_LABELS = {
+  super_admin: 'Super Admin',
+  hr_admin: 'HR Admin',
+  payroll_officer: 'Payroll Officer',
+  supervisor: 'Supervisor',
+  employee: 'Employee'
+};
+const ADMIN_ROLES = ['super_admin', 'hr_admin', 'payroll_officer'];
+
+let supabaseClient = null;
+let session = null;
+let profile = null;
+let company = null;
+let activeView = 'dashboard';
+let authMode = 'login';
+let filters = { employees: '', users: '' };
+let state = {
+  settings: null,
+  profiles: [],
+  employees: [],
+  schedules: [],
+  attendance: [],
+  leaves: [],
+  payrollRuns: [],
+  payrollItems: []
+};
+
+function initSupabase() {
+  if (!CONFIGURED || !window.supabase) return false;
+  supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+  return true;
+}
+
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>'"]/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  }[char]));
+}
+function money(value) {
+  const amount = Number(value || 0);
+  return amount.toLocaleString('en-PH', { style: 'currency', currency: 'PHP' });
+}
+function formatDate(value) {
+  if (!value) return '';
+  return new Date(`${value}T00:00:00`).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: '2-digit' });
+}
+function toast(message) {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2400);
+}
+function badge(text, type = '') {
+  return `<span class="badge ${type}">${escapeHtml(text)}</span>`;
+}
+function empty(message) {
+  return `<div class="empty">${escapeHtml(message)}</div>`;
+}
+function input(label, name, value = '', type = 'text', extraClass = '', attrs = '') {
+  return `<label class="${extraClass}">${label}<input type="${type}" id="${name}" value="${escapeHtml(value ?? '')}" ${attrs}></label>`;
+}
+function selectInput(label, name, options, selected = '', extraClass = '') {
+  const opts = options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${String(selected) === String(value) ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('');
+  return `<label class="${extraClass}">${label}<select id="${name}">${opts}</select></label>`;
+}
+function modal(title, body) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = body;
+  document.getElementById('modal').showModal();
+}
+function closeModal() {
+  document.getElementById('modal').close();
+}
+async function sb(promise, fallbackMessage = 'Supabase request failed') {
+  const { data, error } = await promise;
+  if (error) {
+    console.error(error);
+    throw new Error(error.message || fallbackMessage);
+  }
+  return data;
+}
+function hasAdminAccess() {
+  return profile && ADMIN_ROLES.includes(profile.role);
+}
+function hasPayrollAccess() {
+  return profile && ['super_admin', 'payroll_officer'].includes(profile.role);
+}
+function getEmployee(id) {
+  return state.employees.find(e => e.id === id);
+}
+function getEmployeeName(id) {
+  const emp = getEmployee(id);
+  return emp ? `${emp.last_name}, ${emp.first_name} ${emp.middle_name || ''}`.trim() : 'Unknown Employee';
+}
+function employeeOptions(selected = '') {
+  const rows = state.employees.filter(e => e.status === 'Active');
+  return rows.map(e => `<option value="${e.id}" ${selected === e.id ? 'selected' : ''}>${escapeHtml(getEmployeeName(e.id))}</option>`).join('');
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  document.getElementById('loginTab').classList.toggle('active', mode === 'login');
+  document.getElementById('signupTab').classList.toggle('active', mode === 'signup');
+  document.getElementById('fullNameWrap').classList.toggle('hidden', mode !== 'signup');
+  document.getElementById('authSubmitBtn').textContent = mode === 'login' ? 'Login' : 'Create Account';
+}
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+  if (!CONFIGURED) return toast('Paste Supabase URL and anon key in config.js first.');
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const fullName = document.getElementById('authFullName').value.trim();
+  try {
+    if (authMode === 'login') {
+      await sb(supabaseClient.auth.signInWithPassword({ email, password }), 'Login failed');
+      toast('Logged in.');
+    } else {
+      await sb(supabaseClient.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: fullName || email.split('@')[0] } }
+      }), 'Signup failed');
+      toast('Account created. Check email if confirmation is enabled.');
+    }
+    await boot();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function logout() {
+  await supabaseClient.auth.signOut();
+  session = null;
+  profile = null;
+  company = null;
+  document.getElementById('appShell').classList.add('hidden');
+  document.getElementById('authScreen').classList.remove('hidden');
+}
+
+async function boot() {
+  if (!initSupabase()) {
+    document.getElementById('configWarning').classList.remove('hidden');
+    document.getElementById('authScreen').classList.remove('hidden');
+    return;
+  }
+  const { data } = await supabaseClient.auth.getSession();
+  session = data.session;
+  if (!session) {
+    document.getElementById('authScreen').classList.remove('hidden');
+    document.getElementById('appShell').classList.add('hidden');
+    return;
+  }
+  document.getElementById('authScreen').classList.add('hidden');
+  document.getElementById('appShell').classList.remove('hidden');
+  await loadAllData();
+  supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
+    session = nextSession;
+    if (!nextSession) logout();
+  });
+}
+
+async function loadProfile() {
+  const user = session.user;
+  let rows = await sb(supabaseClient.from('profiles').select('*').eq('id', user.id).limit(1), 'Cannot load profile');
+  if (!rows.length) {
+    await sb(supabaseClient.from('profiles').insert({
+      id: user.id,
+      email: user.email,
+      full_name: user.user_metadata?.full_name || user.email.split('@')[0],
+      role: 'employee',
+      status: 'Active'
+    }), 'Cannot create profile');
+    rows = await sb(supabaseClient.from('profiles').select('*').eq('id', user.id).limit(1));
+  }
+  profile = rows[0];
+  document.getElementById('currentUserName').textContent = profile.full_name || profile.email || 'User';
+  document.getElementById('currentUserRole').textContent = ROLE_LABELS[profile.role] || profile.role;
+}
+
+async function loadAllData() {
+  try {
+    await loadProfile();
+    if (profile.company_id) {
+      const companyRows = await sb(supabaseClient.from('companies').select('*').eq('id', profile.company_id).limit(1));
+      company = companyRows[0] || null;
+    } else {
+      company = null;
+    }
+
+    if (!company) {
+      state = { settings: null, profiles: [], employees: [], schedules: [], attendance: [], leaves: [], payrollRuns: [], payrollItems: [] };
+      renderSetupCompany();
+      return;
+    }
+
+    const [settings, profiles, employees, schedules, attendance, leaves, payrollRuns, payrollItems] = await Promise.all([
+      sb(supabaseClient.from('settings').select('*').eq('company_id', company.id).maybeSingle()),
+      sb(supabaseClient.from('profiles').select('*').order('created_at', { ascending: false })),
+      sb(supabaseClient.from('employees').select('*').eq('company_id', company.id).order('last_name')),
+      sb(supabaseClient.from('schedules').select('*').eq('company_id', company.id).order('schedule_date', { ascending: false })),
+      sb(supabaseClient.from('attendance_records').select('*').eq('company_id', company.id).order('attendance_date', { ascending: false })),
+      sb(supabaseClient.from('leave_requests').select('*').eq('company_id', company.id).order('created_at', { ascending: false })),
+      sb(supabaseClient.from('payroll_runs').select('*').eq('company_id', company.id).order('created_at', { ascending: false })),
+      sb(supabaseClient.from('payroll_items').select('*').eq('company_id', company.id).order('created_at', { ascending: false }))
+    ]);
+    state.settings = settings || defaultSettings();
+    state.profiles = profiles || [];
+    state.employees = employees || [];
+    state.schedules = schedules || [];
+    state.attendance = attendance || [];
+    state.leaves = leaves || [];
+    state.payrollRuns = payrollRuns || [];
+    state.payrollItems = payrollItems || [];
+    document.querySelectorAll('.nav-item').forEach(btn => btn.disabled = false);
+    setView(activeView);
+    toast('Synced with Supabase.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message);
+  }
+}
+
+function defaultSettings() {
+  return {
+    standard_days: 26,
+    grace_minutes: 15,
+    overtime_multiplier: 1.25,
+    default_pagibig: 200,
+    payroll_officer: profile?.full_name || 'Payroll Officer'
+  };
+}
+
+function renderSetupCompany() {
+  document.querySelectorAll('.nav-item').forEach(btn => btn.disabled = true);
+  activeView = 'company';
+  document.querySelectorAll('.view').forEach(section => section.classList.remove('active'));
+  document.getElementById('companyView').classList.add('active');
+  document.getElementById('pageTitle').textContent = 'Initial Company Setup';
+  document.getElementById('companyView').innerHTML = `
+    <div class="card">
+      <h3>Initial Company Setup</h3>
+      <p>Create your company profile first. Your account will be connected as Super Admin.</p>
+      <div class="form-grid">
+        ${input('Company Name', 'setupCompanyName', '')}
+        ${input('Contact Person', 'setupContactPerson', profile?.full_name || '')}
+        ${input('Address', 'setupAddress', '', 'text', 'full-span')}
+        ${input('TIN', 'setupTin')}
+        ${input('SSS Employer No.', 'setupSss')}
+        ${input('PhilHealth Employer No.', 'setupPhilhealth')}
+        ${input('Pag-IBIG Employer No.', 'setupPagibig')}
+        ${input('Contact No.', 'setupContactNo')}
+      </div>
+      <div class="form-actions">
+        <button class="btn primary" onclick="createInitialCompany()">Create Company</button>
+      </div>
+    </div>`;
+}
+
+async function createInitialCompany() {
+  try {
+    const payload = {
+      name: document.getElementById('setupCompanyName').value.trim(),
+      contact_person: document.getElementById('setupContactPerson').value.trim(),
+      address: document.getElementById('setupAddress').value.trim(),
+      tin: document.getElementById('setupTin').value.trim(),
+      sss_no: document.getElementById('setupSss').value.trim(),
+      philhealth_no: document.getElementById('setupPhilhealth').value.trim(),
+      pagibig_no: document.getElementById('setupPagibig').value.trim(),
+      contact_no: document.getElementById('setupContactNo').value.trim(),
+      created_by: session.user.id
+    };
+    if (!payload.name) return toast('Company name is required.');
+    await sb(supabaseClient.rpc('create_company_for_current_user', {
+      p_name: payload.name,
+      p_address: payload.address,
+      p_tin: payload.tin,
+      p_sss_no: payload.sss_no,
+      p_philhealth_no: payload.philhealth_no,
+      p_pagibig_no: payload.pagibig_no,
+      p_contact_person: payload.contact_person,
+      p_contact_no: payload.contact_no
+    }), 'Cannot create company');
+    toast('Company created.');
+    await loadAllData();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function setView(view) {
+  activeView = view;
+  document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+  document.querySelectorAll('.view').forEach(section => section.classList.remove('active'));
+  document.getElementById(`${view}View`).classList.add('active');
+  document.getElementById('pageTitle').textContent = ({
+    dashboard: 'Dashboard', company: 'Company Profile', employees: 'Employee Masterfile', users: 'Users & Roles',
+    schedule: 'Scheduling', attendance: 'Timekeeping / DTR', leave: 'Leave Management', payroll: 'Payroll Processing',
+    payslips: 'Payslips', reports: 'Reports', settings: 'Settings'
+  })[view];
+  render();
+}
+
+function render() {
+  if (!company) return;
+  renderDashboard();
+  renderCompany();
+  renderEmployees();
+  renderUsers();
+  renderSchedule();
+  renderAttendance();
+  renderLeave();
+  renderPayroll();
+  renderPayslips();
+  renderReports();
+  renderSettings();
+}
+
+function renderDashboard() {
+  const active = state.employees.filter(e => e.status === 'Active').length;
+  const inactive = state.employees.filter(e => e.status !== 'Active').length;
+  const today = new Date().toISOString().slice(0, 10);
+  const attendanceToday = state.attendance.filter(a => a.attendance_date === today).length;
+  const pendingLeaves = state.leaves.filter(l => l.status === 'Pending').length;
+  const latestPayroll = state.payrollRuns[0];
+  document.getElementById('dashboardView').innerHTML = `
+    <div class="grid four">
+      <div class="stat"><p>Total Employees</p><strong>${state.employees.length}</strong></div>
+      <div class="stat"><p>Active Employees</p><strong>${active}</strong></div>
+      <div class="stat"><p>Inactive / Resigned</p><strong>${inactive}</strong></div>
+      <div class="stat"><p>Attendance Today</p><strong>${attendanceToday}</strong></div>
+    </div>
+    <div class="grid two" style="margin-top:18px;">
+      <div class="card">
+        <h3>${escapeHtml(company.name)}</h3>
+        <p>${escapeHtml(company.address || '')}</p>
+        <p>Contact: ${escapeHtml(company.contact_person || '')} ${escapeHtml(company.contact_no || '')}</p>
+      </div>
+      <div class="card">
+        <h3>Action Items</h3>
+        <p>${pendingLeaves ? `${pendingLeaves} pending leave request/s for approval.` : 'No pending leave requests.'}</p>
+        <p>${latestPayroll ? `Latest payroll: ${escapeHtml(latestPayroll.period_label)} — Net Pay ${money(latestPayroll.total_net_pay)}` : 'No payroll run yet.'}</p>
+        <div class="toolbar-left">
+          <button class="btn primary" onclick="setView('employees')">Add Employees</button>
+          <button class="btn secondary" onclick="setView('attendance')">Encode DTR</button>
+          <button class="btn secondary" onclick="setView('payroll')">Process Payroll</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;">
+      <h3>Cloud Status</h3>
+      <div class="grid three">
+        <p>${badge('Supabase Auth')} Email/password login</p>
+        <p>${badge('Postgres Database')} Cloud records</p>
+        <p>${badge('RLS Policies')} Role-based access</p>
+        <p>${badge('Employee Masterfile')} CRUD + CSV</p>
+        <p>${badge('Payroll')} Basic computation</p>
+        <p>${badge('Payslip')} Printable slips</p>
+      </div>
+    </div>`;
+}
+
+function renderCompany() {
+  document.getElementById('companyView').innerHTML = `
+    <div class="card">
+      <h3>Company Profile</h3>
+      <div class="form-grid">
+        ${input('Company Name', 'companyName', company.name)}
+        ${input('Contact Person', 'contactPerson', company.contact_person)}
+        ${input('Address', 'address', company.address, 'text', 'full-span')}
+        ${input('TIN', 'tin', company.tin)}
+        ${input('SSS Employer No.', 'sssNo', company.sss_no)}
+        ${input('PhilHealth Employer No.', 'philhealthNo', company.philhealth_no)}
+        ${input('Pag-IBIG Employer No.', 'pagibigNo', company.pagibig_no)}
+        ${input('Contact No.', 'contactNo', company.contact_no)}
+      </div>
+      <div class="form-actions">
+        <button class="btn primary" onclick="saveCompany()">Save Company</button>
+      </div>
+    </div>`;
+}
+async function saveCompany() {
+  try {
+    const payload = {
+      name: document.getElementById('companyName').value.trim(),
+      contact_person: document.getElementById('contactPerson').value.trim(),
+      address: document.getElementById('address').value.trim(),
+      tin: document.getElementById('tin').value.trim(),
+      sss_no: document.getElementById('sssNo').value.trim(),
+      philhealth_no: document.getElementById('philhealthNo').value.trim(),
+      pagibig_no: document.getElementById('pagibigNo').value.trim(),
+      contact_no: document.getElementById('contactNo').value.trim(),
+      updated_at: new Date().toISOString()
+    };
+    await sb(supabaseClient.from('companies').update(payload).eq('id', company.id), 'Cannot save company');
+    toast('Company saved.');
+    await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function renderEmployees() {
+  const q = filters.employees.toLowerCase();
+  const rows = state.employees.filter(e => `${e.employee_no} ${e.first_name} ${e.middle_name} ${e.last_name} ${e.position} ${e.department}`.toLowerCase().includes(q));
+  document.getElementById('employeesView').innerHTML = `
+    <div class="card">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <button class="btn primary" onclick="openEmployeeForm()">+ Add Employee</button>
+          <button class="btn secondary" onclick="exportEmployeesCSV()">Export CSV</button>
+        </div>
+        <input class="search" placeholder="Search employee..." value="${escapeHtml(filters.employees)}" oninput="filters.employees=this.value; renderEmployees();">
+      </div>
+      ${rows.length ? employeeTable(rows) : empty('Wala pang employee record. Add employee muna lods.')}
+    </div>`;
+}
+function employeeTable(rows) {
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Employee ID</th><th>Name</th><th>Position</th><th>Department</th><th>Date Hired</th><th>Salary</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>${rows.map(e => `<tr>
+      <td>${escapeHtml(e.employee_no || '')}</td>
+      <td><strong>${escapeHtml(getEmployeeName(e.id))}</strong><div class="small">${escapeHtml(e.contact_no || '')}</div></td>
+      <td>${escapeHtml(e.position || '')}</td>
+      <td>${escapeHtml(e.department || '')}</td>
+      <td>${formatDate(e.date_hired)}</td>
+      <td>${money(e.basic_salary)}</td>
+      <td>${badge(e.status || 'Active', e.status === 'Active' ? '' : 'gray')}</td>
+      <td class="actions"><button class="btn secondary" onclick="openEmployeeForm('${e.id}')">Edit</button><button class="btn danger" onclick="deleteEmployee('${e.id}')">Delete</button></td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function openEmployeeForm(id = '') {
+  const e = id ? getEmployee(id) : {};
+  modal(id ? 'Edit Employee' : 'Add Employee', `
+    <div class="form-grid">
+      ${input('Employee ID', 'empNo', e.employee_no || nextEmployeeNo())}
+      ${input('Date Hired', 'empDateHired', e.date_hired || new Date().toISOString().slice(0,10), 'date')}
+      ${input('Last Name', 'empLastName', e.last_name || '')}
+      ${input('First Name', 'empFirstName', e.first_name || '')}
+      ${input('Middle Name', 'empMiddleName', e.middle_name || '')}
+      ${input('Birth Date', 'empBirthDate', e.birth_date || '', 'date')}
+      ${input('Position', 'empPosition', e.position || '')}
+      ${input('Department', 'empDepartment', e.department || '')}
+      ${selectInput('Employment Status', 'empStatus', [['Active','Active'],['Inactive','Inactive'],['Resigned','Resigned'],['On Leave','On Leave']], e.status || 'Active')}
+      ${input('Basic Salary', 'empSalary', e.basic_salary || 13000, 'number', '', 'step="0.01"')}
+      ${input('Daily Rate', 'empDailyRate', e.daily_rate || '', 'number', '', 'step="0.01"')}
+      ${input('Hourly Rate', 'empHourlyRate', e.hourly_rate || '', 'number', '', 'step="0.01"')}
+      ${input('SSS Number', 'empSss', e.sss_no || '')}
+      ${input('PhilHealth Number', 'empPhilhealth', e.philhealth_no || '')}
+      ${input('Pag-IBIG Number', 'empPagibig', e.pagibig_no || '')}
+      ${input('TIN', 'empTin', e.tin || '')}
+      ${input('Contact No.', 'empContact', e.contact_no || '')}
+      ${input('Emergency Contact', 'empEmergency', e.emergency_contact || '')}
+      ${input('Address', 'empAddress', e.address || '', 'text', 'full-span')}
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="saveEmployee('${id}')">Save Employee</button></div>`);
+}
+function nextEmployeeNo() {
+  const n = state.employees.length + 1;
+  return `EMP-${String(n).padStart(4, '0')}`;
+}
+async function saveEmployee(id = '') {
+  try {
+    const basic = Number(document.getElementById('empSalary').value || 0);
+    const daily = Number(document.getElementById('empDailyRate').value || 0) || basic / Number(state.settings?.standard_days || 26);
+    const hourly = Number(document.getElementById('empHourlyRate').value || 0) || daily / 8;
+    const payload = {
+      company_id: company.id,
+      employee_no: document.getElementById('empNo').value.trim(),
+      date_hired: document.getElementById('empDateHired').value,
+      last_name: document.getElementById('empLastName').value.trim(),
+      first_name: document.getElementById('empFirstName').value.trim(),
+      middle_name: document.getElementById('empMiddleName').value.trim(),
+      birth_date: document.getElementById('empBirthDate').value || null,
+      position: document.getElementById('empPosition').value.trim(),
+      department: document.getElementById('empDepartment').value.trim(),
+      status: document.getElementById('empStatus').value,
+      basic_salary: basic,
+      daily_rate: daily,
+      hourly_rate: hourly,
+      sss_no: document.getElementById('empSss').value.trim(),
+      philhealth_no: document.getElementById('empPhilhealth').value.trim(),
+      pagibig_no: document.getElementById('empPagibig').value.trim(),
+      tin: document.getElementById('empTin').value.trim(),
+      contact_no: document.getElementById('empContact').value.trim(),
+      emergency_contact: document.getElementById('empEmergency').value.trim(),
+      address: document.getElementById('empAddress').value.trim(),
+      updated_at: new Date().toISOString()
+    };
+    if (!payload.employee_no || !payload.last_name || !payload.first_name) return toast('Employee ID, first name, and last name are required.');
+    if (id) await sb(supabaseClient.from('employees').update(payload).eq('id', id), 'Cannot update employee');
+    else await sb(supabaseClient.from('employees').insert({ ...payload, created_by: session.user.id }), 'Cannot add employee');
+    closeModal(); toast('Employee saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+async function deleteEmployee(id) {
+  if (!confirm('Delete this employee record?')) return;
+  try {
+    await sb(supabaseClient.from('employees').delete().eq('id', id), 'Cannot delete employee');
+    toast('Employee deleted.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function renderUsers() {
+  const q = filters.users.toLowerCase();
+  const rows = state.profiles.filter(p => `${p.email} ${p.full_name} ${p.role}`.toLowerCase().includes(q));
+  document.getElementById('usersView').innerHTML = `
+    <div class="card">
+      <div class="toolbar">
+        <div><h3>Users & Roles</h3><p>Users create account on login screen. Admin can connect them to company and assign role.</p></div>
+        <input class="search" placeholder="Search user..." value="${escapeHtml(filters.users)}" oninput="filters.users=this.value; renderUsers();">
+      </div>
+      ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Company</th><th>Action</th></tr></thead><tbody>${rows.map(p => `<tr>
+        <td>${escapeHtml(p.full_name || '')}</td>
+        <td>${escapeHtml(p.email || '')}</td>
+        <td>${badge(ROLE_LABELS[p.role] || p.role)}</td>
+        <td>${badge(p.status || 'Active', p.status === 'Active' ? '' : 'gray')}</td>
+        <td>${p.company_id ? 'Connected' : badge('Not connected', 'orange')}</td>
+        <td class="actions"><button class="btn secondary" onclick="openUserRoleForm('${p.id}')">Edit Role</button></td>
+      </tr>`).join('')}</tbody></table></div>` : empty('No users found.')}
+    </div>`;
+}
+function openUserRoleForm(id) {
+  const p = state.profiles.find(x => x.id === id);
+  modal('Edit User Role', `
+    <div class="form-grid">
+      ${input('Full Name', 'userFullName', p.full_name || '')}
+      ${input('Email', 'userEmail', p.email || '', 'email', '', 'disabled')}
+      ${selectInput('Role', 'userRole', Object.entries(ROLE_LABELS), p.role || 'employee')}
+      ${selectInput('Status', 'userStatus', [['Active','Active'],['Inactive','Inactive']], p.status || 'Active')}
+      ${selectInput('Connect to Company', 'userCompany', [[company.id, company.name], ['', 'No company']], p.company_id || company.id)}
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="saveUserRole('${id}')">Save User</button></div>`);
+}
+async function saveUserRole(id) {
+  try {
+    await sb(supabaseClient.from('profiles').update({
+      full_name: document.getElementById('userFullName').value.trim(),
+      role: document.getElementById('userRole').value,
+      status: document.getElementById('userStatus').value,
+      company_id: document.getElementById('userCompany').value || null
+    }).eq('id', id), 'Cannot save user role');
+    closeModal(); toast('User role saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function renderSchedule() {
+  document.getElementById('scheduleView').innerHTML = `
+    <div class="card">
+      <div class="toolbar"><button class="btn primary" onclick="openScheduleForm()">+ Add Schedule</button><button class="btn secondary" onclick="exportCSV('schedules')">Export CSV</button></div>
+      ${state.schedules.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Time</th><th>Rest Day</th><th>Action</th></tr></thead><tbody>${state.schedules.map(s => `<tr>
+        <td>${formatDate(s.schedule_date)}</td><td>${escapeHtml(getEmployeeName(s.employee_id))}</td><td>${escapeHtml(s.shift_name || '')}</td><td>${s.start_time || ''} - ${s.end_time || ''}</td><td>${s.is_rest_day ? badge('Rest Day','gray') : ''}</td>
+        <td class="actions"><button class="btn secondary" onclick="openScheduleForm('${s.id}')">Edit</button><button class="btn danger" onclick="deleteRow('schedules','${s.id}')">Delete</button></td>
+      </tr>`).join('')}</tbody></table></div>` : empty('No schedule yet.')}
+    </div>`;
+}
+function openScheduleForm(id = '') {
+  const s = state.schedules.find(x => x.id === id) || {};
+  modal(id ? 'Edit Schedule' : 'Add Schedule', `
+    <div class="form-grid">
+      <label>Employee<select id="schEmployee">${employeeOptions(s.employee_id)}</select></label>
+      ${input('Schedule Date', 'schDate', s.schedule_date || new Date().toISOString().slice(0,10), 'date')}
+      ${input('Shift Name', 'schShift', s.shift_name || 'Regular Shift')}
+      ${input('Start Time', 'schStart', s.start_time || '08:00', 'time')}
+      ${input('End Time', 'schEnd', s.end_time || '17:00', 'time')}
+      ${selectInput('Rest Day?', 'schRest', [['false','No'],['true','Yes']], String(Boolean(s.is_rest_day)))}
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="saveSchedule('${id}')">Save Schedule</button></div>`);
+}
+async function saveSchedule(id = '') {
+  try {
+    const payload = {
+      company_id: company.id,
+      employee_id: document.getElementById('schEmployee').value,
+      schedule_date: document.getElementById('schDate').value,
+      shift_name: document.getElementById('schShift').value.trim(),
+      start_time: document.getElementById('schStart').value || null,
+      end_time: document.getElementById('schEnd').value || null,
+      is_rest_day: document.getElementById('schRest').value === 'true'
+    };
+    if (id) await sb(supabaseClient.from('schedules').update(payload).eq('id', id));
+    else await sb(supabaseClient.from('schedules').insert(payload));
+    closeModal(); toast('Schedule saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function minutesFromTime(time) {
+  if (!time) return null;
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+function hoursBetween(start, end) {
+  const s = minutesFromTime(start);
+  let e = minutesFromTime(end);
+  if (s === null || e === null) return 0;
+  if (e < s) e += 24 * 60;
+  return Math.max(0, (e - s) / 60);
+}
+function deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes) {
+  const sched = state.schedules.find(s => s.employee_id === employeeId && s.schedule_date === date);
+  const worked = Math.max(0, hoursBetween(timeIn, timeOut) - Number(breakMinutes || 0) / 60);
+  let late = 0, undertime = 0, ot = 0, status = 'Present';
+  if (!timeIn || !timeOut) status = 'Incomplete';
+  if (sched && !sched.is_rest_day) {
+    const start = minutesFromTime(sched.start_time);
+    const end = minutesFromTime(sched.end_time);
+    const tin = minutesFromTime(timeIn);
+    const tout = minutesFromTime(timeOut);
+    const grace = Number(state.settings?.grace_minutes || 0);
+    if (tin !== null && start !== null) late = Math.max(0, tin - start - grace);
+    if (tout !== null && end !== null) undertime = Math.max(0, end - tout);
+    const schedHours = Math.max(0, hoursBetween(sched.start_time, sched.end_time) - 1);
+    ot = Math.max(0, worked - schedHours);
+  } else {
+    ot = Math.max(0, worked - 8);
+  }
+  return { worked, late, undertime, ot, status };
+}
+function renderAttendance() {
+  document.getElementById('attendanceView').innerHTML = `
+    <div class="card">
+      <div class="toolbar"><button class="btn primary" onclick="openAttendanceForm()">+ Encode DTR</button><button class="btn secondary" onclick="exportCSV('attendance_records')">Export CSV</button></div>
+      ${state.attendance.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Time</th><th>Work Mode</th><th>Hours</th><th>Late</th><th>Undertime</th><th>OT</th><th>Status</th><th>Action</th></tr></thead><tbody>${state.attendance.map(a => `<tr>
+        <td>${formatDate(a.attendance_date)}</td><td>${escapeHtml(getEmployeeName(a.employee_id))}</td><td>${a.time_in || ''} - ${a.time_out || ''}</td><td>${escapeHtml(a.work_mode || '')}</td><td>${Number(a.hours_worked || 0).toFixed(2)}</td><td>${a.late_minutes || 0} min</td><td>${a.undertime_minutes || 0} min</td><td>${Number(a.overtime_hours || 0).toFixed(2)}</td><td>${badge(a.status || 'Present')}</td>
+        <td class="actions"><button class="btn secondary" onclick="openAttendanceForm('${a.id}')">Edit</button><button class="btn danger" onclick="deleteRow('attendance_records','${a.id}')">Delete</button></td>
+      </tr>`).join('')}</tbody></table></div>` : empty('No attendance records yet.')}
+    </div>`;
+}
+function openAttendanceForm(id = '') {
+  const a = state.attendance.find(x => x.id === id) || {};
+  modal(id ? 'Edit DTR' : 'Encode DTR', `
+    <div class="form-grid">
+      <label>Employee<select id="attEmployee">${employeeOptions(a.employee_id)}</select></label>
+      ${input('Date', 'attDate', a.attendance_date || new Date().toISOString().slice(0,10), 'date')}
+      ${input('Time In', 'attIn', a.time_in || '08:00', 'time')}
+      ${input('Time Out', 'attOut', a.time_out || '17:00', 'time')}
+      ${input('Break Minutes', 'attBreak', a.break_minutes ?? 60, 'number')}
+      ${selectInput('Work Mode', 'attMode', [['Office','Office'],['WFH','Work From Home'],['Hybrid','Hybrid'],['Field','Field Work']], a.work_mode || 'Office')}
+      ${input('Remarks', 'attRemarks', a.remarks || '', 'text', 'full-span')}
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="saveAttendance('${id}')">Save DTR</button></div>`);
+}
+async function saveAttendance(id = '') {
+  try {
+    const employeeId = document.getElementById('attEmployee').value;
+    const date = document.getElementById('attDate').value;
+    const timeIn = document.getElementById('attIn').value;
+    const timeOut = document.getElementById('attOut').value;
+    const breakMinutes = Number(document.getElementById('attBreak').value || 0);
+    const d = deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes);
+    const payload = {
+      company_id: company.id, employee_id: employeeId, attendance_date: date, time_in: timeIn || null, time_out: timeOut || null,
+      break_minutes: breakMinutes, work_mode: document.getElementById('attMode').value, remarks: document.getElementById('attRemarks').value.trim(),
+      hours_worked: d.worked, late_minutes: d.late, undertime_minutes: d.undertime, overtime_hours: d.ot, status: d.status
+    };
+    if (id) await sb(supabaseClient.from('attendance_records').update(payload).eq('id', id));
+    else await sb(supabaseClient.from('attendance_records').insert(payload));
+    closeModal(); toast('DTR saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function renderLeave() {
+  document.getElementById('leaveView').innerHTML = `
+    <div class="card">
+      <div class="toolbar"><button class="btn primary" onclick="openLeaveForm()">+ File Leave</button><button class="btn secondary" onclick="exportCSV('leave_requests')">Export CSV</button></div>
+      ${state.leaves.length ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Type</th><th>Date</th><th>Days</th><th>Status</th><th>Reason</th><th>Action</th></tr></thead><tbody>${state.leaves.map(l => `<tr>
+        <td>${escapeHtml(getEmployeeName(l.employee_id))}</td><td>${escapeHtml(l.leave_type)}</td><td>${formatDate(l.start_date)} - ${formatDate(l.end_date)}</td><td>${l.days}</td><td>${badge(l.status, l.status === 'Approved' ? '' : l.status === 'Rejected' ? 'red' : 'orange')}</td><td>${escapeHtml(l.reason || '')}</td>
+        <td class="actions"><button class="btn secondary" onclick="openLeaveForm('${l.id}')">Edit</button><button class="btn danger" onclick="deleteRow('leave_requests','${l.id}')">Delete</button></td>
+      </tr>`).join('')}</tbody></table></div>` : empty('No leave request yet.')}
+    </div>`;
+}
+function openLeaveForm(id = '') {
+  const l = state.leaves.find(x => x.id === id) || {};
+  modal(id ? 'Edit Leave' : 'File Leave', `
+    <div class="form-grid">
+      <label>Employee<select id="leaveEmployee">${employeeOptions(l.employee_id)}</select></label>
+      ${selectInput('Leave Type', 'leaveType', [['Vacation Leave','Vacation Leave'],['Sick Leave','Sick Leave'],['Emergency Leave','Emergency Leave'],['Maternity Leave','Maternity Leave'],['Paternity Leave','Paternity Leave']], l.leave_type || 'Vacation Leave')}
+      ${input('Start Date', 'leaveStart', l.start_date || new Date().toISOString().slice(0,10), 'date')}
+      ${input('End Date', 'leaveEnd', l.end_date || new Date().toISOString().slice(0,10), 'date')}
+      ${input('Days', 'leaveDays', l.days || 1, 'number', '', 'step="0.5"')}
+      ${selectInput('Status', 'leaveStatus', [['Pending','Pending'],['Approved','Approved'],['Rejected','Rejected']], l.status || 'Pending')}
+      <label class="full-span">Reason<textarea id="leaveReason">${escapeHtml(l.reason || '')}</textarea></label>
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="saveLeave('${id}')">Save Leave</button></div>`);
+}
+async function saveLeave(id = '') {
+  try {
+    const payload = {
+      company_id: company.id,
+      employee_id: document.getElementById('leaveEmployee').value,
+      leave_type: document.getElementById('leaveType').value,
+      start_date: document.getElementById('leaveStart').value,
+      end_date: document.getElementById('leaveEnd').value,
+      days: Number(document.getElementById('leaveDays').value || 1),
+      status: document.getElementById('leaveStatus').value,
+      reason: document.getElementById('leaveReason').value.trim(),
+      approved_by: document.getElementById('leaveStatus').value === 'Pending' ? null : session.user.id
+    };
+    if (id) await sb(supabaseClient.from('leave_requests').update(payload).eq('id', id));
+    else await sb(supabaseClient.from('leave_requests').insert(payload));
+    closeModal(); toast('Leave saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+function renderPayroll() {
+  document.getElementById('payrollView').innerHTML = `
+    <div class="grid two">
+      <div class="card"><h3>Process Payroll</h3>
+        <div class="form-grid">
+          ${input('Period Label', 'payPeriodLabel', `Payroll ${new Date().toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })}`)}
+          ${input('Pay Date', 'payDate', new Date().toISOString().slice(0,10), 'date')}
+          ${input('Period Start', 'payStart', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10), 'date')}
+          ${input('Period End', 'payEnd', new Date(new Date().getFullYear(), new Date().getMonth()+1, 0).toISOString().slice(0,10), 'date')}
+        </div>
+        <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
+      </div>
+      <div class="card"><h3>Payroll Rules</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent.</p></div>
+    </div>
+    <div class="card" style="margin-top:18px;">
+      <h3>Payroll Runs</h3>
+      ${state.payrollRuns.length ? `<div class="table-wrap"><table><thead><tr><th>Period</th><th>Date</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Action</th></tr></thead><tbody>${state.payrollRuns.map(r => `<tr>
+        <td>${escapeHtml(r.period_label)}</td><td>${formatDate(r.pay_date)}</td><td>${money(r.total_gross_pay)}</td><td>${money(r.total_deductions)}</td><td><strong>${money(r.total_net_pay)}</strong></td><td><button class="btn secondary" onclick="viewPayrollRun('${r.id}')">View</button></td>
+      </tr>`).join('')}</tbody></table></div>` : empty('No payroll run yet.')}
+    </div>`;
+}
+async function processPayroll() {
+  try {
+    const start = document.getElementById('payStart').value;
+    const end = document.getElementById('payEnd').value;
+    const periodLabel = document.getElementById('payPeriodLabel').value.trim();
+    const payDate = document.getElementById('payDate').value;
+    const items = state.employees.filter(e => e.status === 'Active').map(e => computePayrollItem(e, start, end));
+    const totals = items.reduce((acc, x) => {
+      acc.gross += x.gross_pay; acc.deductions += x.total_deductions; acc.net += x.net_pay; return acc;
+    }, { gross: 0, deductions: 0, net: 0 });
+    const run = await sb(supabaseClient.from('payroll_runs').insert({
+      company_id: company.id, period_label: periodLabel, period_start: start, period_end: end, pay_date: payDate,
+      total_gross_pay: totals.gross, total_deductions: totals.deductions, total_net_pay: totals.net, created_by: session.user.id
+    }).select().single(), 'Cannot create payroll run');
+    const rows = items.map(i => ({ ...i, company_id: company.id, payroll_run_id: run.id }));
+    if (rows.length) await sb(supabaseClient.from('payroll_items').insert(rows), 'Cannot save payroll items');
+    toast('Payroll run saved.'); await loadAllData(); activeView = 'payroll';
+  } catch (error) { toast(error.message); }
+}
+function computePayrollItem(e, start, end) {
+  const records = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end && a.status !== 'Absent');
+  const daysWorked = new Set(records.map(r => r.attendance_date)).size;
+  const otHours = records.reduce((sum, r) => sum + Number(r.overtime_hours || 0), 0);
+  const lateMins = records.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0);
+  const undertimeMins = records.reduce((sum, r) => sum + Number(r.undertime_minutes || 0), 0);
+  const daily = Number(e.daily_rate || (Number(e.basic_salary || 0) / Number(state.settings?.standard_days || 26)));
+  const hourly = Number(e.hourly_rate || daily / 8);
+  const basicPay = daysWorked * daily;
+  const otPay = otHours * hourly * Number(state.settings?.overtime_multiplier || 1.25);
+  const lateDeduction = lateMins / 60 * hourly;
+  const undertimeDeduction = undertimeMins / 60 * hourly;
+  const sss = 0;
+  const philhealth = 0;
+  const pagibig = Number(state.settings?.default_pagibig || 200);
+  const withholdingTax = 0;
+  const cashAdvance = 0;
+  const gross = basicPay + otPay;
+  const totalDeductions = lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance;
+  const net = Math.max(0, gross - totalDeductions);
+  return {
+    employee_id: e.id, days_worked: daysWorked, overtime_hours: otHours, late_minutes: lateMins, undertime_minutes: undertimeMins,
+    basic_pay: basicPay, overtime_pay: otPay, gross_pay: gross, late_deduction: lateDeduction, undertime_deduction: undertimeDeduction,
+    sss, philhealth, pagibig, withholding_tax: withholdingTax, cash_advance: cashAdvance, total_deductions: totalDeductions, net_pay: net
+  };
+}
+function viewPayrollRun(id) {
+  const run = state.payrollRuns.find(r => r.id === id);
+  const items = state.payrollItems.filter(i => i.payroll_run_id === id);
+  modal(`Payroll: ${run.period_label}`, `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+}
+
+function renderPayslips() {
+  const runOptions = state.payrollRuns.map(r => `<option value="${r.id}">${escapeHtml(r.period_label)} - ${formatDate(r.pay_date)}</option>`).join('');
+  const selected = state.payrollRuns[0]?.id || '';
+  document.getElementById('payslipsView').innerHTML = `
+    <div class="card">
+      <div class="toolbar"><label>Payroll Run<select id="payslipRun" onchange="renderPayslipList(this.value)">${runOptions}</select></label><button class="btn primary" onclick="window.print()">Print Payslips</button></div>
+      <div id="payslipList">${selected ? payslipHtml(selected) : empty('No payroll run yet.')}</div>
+    </div>`;
+}
+function renderPayslipList(runId) {
+  document.getElementById('payslipList').innerHTML = payslipHtml(runId);
+}
+function payslipHtml(runId) {
+  const run = state.payrollRuns.find(r => r.id === runId);
+  const items = state.payrollItems.filter(i => i.payroll_run_id === runId);
+  return items.map(i => {
+    const emp = getEmployee(i.employee_id) || {};
+    return `<div class="payslip">
+      <div class="payslip-head"><div><h3>${escapeHtml(company.name)}</h3><p>${escapeHtml(company.address || '')}</p></div><div><strong>PAYSLIP</strong><p>${escapeHtml(run.period_label)}</p></div></div>
+      <div class="grid two"><div><p><strong>${escapeHtml(getEmployeeName(i.employee_id))}</strong><br>${escapeHtml(emp.position || '')} • ${escapeHtml(emp.department || '')}</p><p>Pay Date: ${formatDate(run.pay_date)}</p></div>
+      <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime</span><strong>${money(i.undertime_deduction)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
+    </div>`;
+  }).join('') || empty('No payslip items found.');
+}
+
+function renderReports() {
+  document.getElementById('reportsView').innerHTML = `
+    <div class="grid three">
+      <div class="card"><h3>Employee List</h3><p>Export employee masterfile.</p><button class="btn primary" onclick="exportEmployeesCSV()">Download CSV</button></div>
+      <div class="card"><h3>Attendance</h3><p>Export DTR records.</p><button class="btn primary" onclick="exportCSV('attendance_records')">Download CSV</button></div>
+      <div class="card"><h3>Leave Requests</h3><p>Export leave monitoring.</p><button class="btn primary" onclick="exportCSV('leave_requests')">Download CSV</button></div>
+      <div class="card"><h3>Payroll Items</h3><p>Export payroll details.</p><button class="btn primary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
+      <div class="card"><h3>Full Backup</h3><p>Download JSON backup from Supabase-loaded data.</p><button class="btn secondary" onclick="exportBackupJSON()">Backup JSON</button></div>
+    </div>`;
+}
+function renderSettings() {
+  const s = state.settings || defaultSettings();
+  document.getElementById('settingsView').innerHTML = `
+    <div class="card"><h3>Payroll Settings</h3>
+      <div class="form-grid">
+        ${input('Standard Working Days / Month', 'setDays', s.standard_days, 'number', '', 'step="0.01"')}
+        ${input('Grace Minutes', 'setGrace', s.grace_minutes, 'number')}
+        ${input('OT Multiplier', 'setOt', s.overtime_multiplier, 'number', '', 'step="0.01"')}
+        ${input('Default Pag-IBIG Deduction', 'setPagibig', s.default_pagibig, 'number', '', 'step="0.01"')}
+        ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '')}
+      </div>
+      <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
+    </div>`;
+}
+async function saveSettings() {
+  try {
+    const payload = {
+      company_id: company.id,
+      standard_days: Number(document.getElementById('setDays').value || 26),
+      grace_minutes: Number(document.getElementById('setGrace').value || 0),
+      overtime_multiplier: Number(document.getElementById('setOt').value || 1.25),
+      default_pagibig: Number(document.getElementById('setPagibig').value || 0),
+      payroll_officer: document.getElementById('setOfficer').value.trim(),
+      updated_at: new Date().toISOString()
+    };
+    await sb(supabaseClient.from('settings').upsert(payload, { onConflict: 'company_id' }), 'Cannot save settings');
+    toast('Settings saved.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+
+async function deleteRow(table, id) {
+  if (!confirm('Delete this record?')) return;
+  try {
+    await sb(supabaseClient.from(table).delete().eq('id', id), 'Cannot delete record');
+    toast('Deleted.'); await loadAllData();
+  } catch (error) { toast(error.message); }
+}
+function toCSV(rows) {
+  if (!rows.length) return '';
+  const headers = Object.keys(rows[0]);
+  const esc = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  return [headers.join(','), ...rows.map(r => headers.map(h => esc(r[h])).join(','))].join('\n');
+}
+function downloadFile(filename, content, type = 'text/plain') {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function exportCSV(table) {
+  const map = { schedules: state.schedules, attendance_records: state.attendance, leave_requests: state.leaves, payroll_items: state.payrollItems };
+  const rows = map[table] || [];
+  if (!rows.length) return toast('No data to export.');
+  downloadFile(`${table}.csv`, toCSV(rows), 'text/csv');
+}
+function exportEmployeesCSV() {
+  if (!state.employees.length) return toast('No employees to export.');
+  downloadFile('employees.csv', toCSV(state.employees), 'text/csv');
+}
+function exportBackupJSON() {
+  const backup = { exported_at: new Date().toISOString(), company, profile, state };
+  downloadFile(`e4u-cloud-backup-${new Date().toISOString().slice(0,10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
+}
+
+document.addEventListener('click', event => {
+  const btn = event.target.closest('.nav-item');
+  if (btn && btn.dataset.view && !btn.disabled) setView(btn.dataset.view);
+});
+
+document.addEventListener('DOMContentLoaded', boot);
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('service-worker.js').catch(() => {}));
+}

@@ -1,0 +1,118 @@
+E4U HR & PAYROLL MANAGEMENT SYSTEM v2
+LOGIN + SUPABASE DATABASE SETUP GUIDE
+
+IMPORTANT:
+This version uses Supabase Auth + Supabase Postgres database.
+You must create a Supabase project first before login will work.
+
+============================================================
+STEP 1 — CREATE SUPABASE PROJECT
+============================================================
+1. Go to https://supabase.com
+2. Create a new project.
+3. Wait until the project is ready.
+
+============================================================
+STEP 2 — RUN THE DATABASE SQL
+============================================================
+1. In Supabase Dashboard, open SQL Editor.
+2. Open the file: supabase-schema.sql
+3. Copy everything.
+4. Paste into SQL Editor.
+5. Click Run.
+
+This creates:
+- companies
+- profiles
+- settings
+- employees
+- schedules
+- attendance_records
+- leave_requests
+- payroll_runs
+- payroll_items
+- Row Level Security policies
+- first-user setup function
+
+============================================================
+STEP 3 — COPY API KEYS
+============================================================
+1. In Supabase Dashboard, open Project Settings.
+2. Go to API.
+3. Copy:
+   - Project URL
+   - anon public key
+
+============================================================
+STEP 4 — EDIT config.js
+============================================================
+Open config.js and replace:
+
+PASTE_SUPABASE_PROJECT_URL_HERE
+PASTE_SUPABASE_ANON_KEY_HERE
+
+Example:
+window.E4U_SUPABASE_CONFIG = {
+  url: 'https://your-project-id.supabase.co',
+  anonKey: 'your-anon-key-here'
+};
+
+Do not use the service_role key in this frontend app.
+Use anon public key only.
+
+============================================================
+STEP 5 — OPEN THE APP
+============================================================
+1. Open index.html in Google Chrome.
+2. Click Create Account.
+3. First registered user becomes Super Admin.
+4. Create the company profile.
+5. Add employees.
+6. Encode schedule and DTR.
+7. Process payroll.
+8. Print payslips.
+
+============================================================
+OPTIONAL — AUTH EMAIL CONFIRMATION
+============================================================
+Supabase may require email confirmation depending on your Auth settings.
+For quick testing:
+1. Supabase Dashboard > Authentication > Providers
+2. Email provider
+3. You may temporarily disable Confirm email.
+
+For production, enable email confirmation.
+
+============================================================
+CURRENT MODULES INCLUDED
+============================================================
+- Email/password login
+- Create account
+- Initial company setup
+- Company profile
+- User profiles and role assignment
+- Employee masterfile
+- Scheduling
+- Timekeeping / DTR
+- Leave requests
+- Payroll computation
+- Payslip printing
+- CSV exports
+- JSON backup
+- Row Level Security policies
+
+============================================================
+CURRENT LIMITATIONS
+============================================================
+This is v2 cloud prototype.
+Not yet included:
+- Real SSS contribution table
+- Real PhilHealth contribution table
+- Real withholding tax table
+- Biometric device integration
+- QR time-in/time-out
+- GPS validation
+- Email invite workflow
+- File upload / 201 files
+
+These can be added in v3.
