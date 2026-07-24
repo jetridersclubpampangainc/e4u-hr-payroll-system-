@@ -1,17 +1,20 @@
-E4U HR Payroll System v2.4 - Payroll Logic Fix
+E4U HR & Payroll Cloud System v2.5
+Full payroll compliance demo package.
 
-Fixes included:
-- Version label updated to v2.4 Cloud.
-- SSS, PhilHealth, and Pag-IBIG deductions compute only when the employee has DTR/gross pay in the selected payroll period.
-- No DTR / zero gross pay = zero government deductions.
-- Payroll run view marks employees with "No DTR in period" for easy checking.
-- COE, v2.3 reports, employer shares, and government contribution reports are retained.
+IMPORTANT: Do not overwrite config.js on GitHub if your live Supabase login is already working.
+Upload/replace only: index.html, app.js, styles.css, service-worker.js, README.txt.
 
-Upload/replace these files in GitHub:
-- index.html
-- app.js
-- styles.css
-- service-worker.js
-- README.txt
+v2.5 additions:
+- Payroll mode: Attendance-Based, Daily Rate, Monthly Fixed.
+- DTR statuses: Present, Absent, Half Day, Rest Day, Holiday, Leave With Pay, Leave Without Pay, Incomplete.
+- Absent deduction logic for monthly/daily payroll.
+- Local payroll adjustments per employee: allowances, cash advance, SSS loan, Pag-IBIG loan, company loan, other deduction.
+- Estimated withholding tax toggle using annualized graduated compensation table. Verify against BIR before filing.
+- Payslip improvements: allowances, withholding tax, cash advance/loans, SSS, PhilHealth, Pag-IBIG.
+- Payroll run detail improvements: gross, government deductions, tax, loan/cash, net pay.
+- Reports retained: payroll summary, government contributions, 13th month estimate, backups, CSV exports.
+- COE templates retained.
 
-Do NOT replace config.js if your live Supabase login is already working.
+Notes:
+- This is a browser/Supabase prototype. Some adjustment fields are saved in browser localStorage, not Supabase.
+- For production, add dedicated database tables for loans, allowances, audit logs, and payroll adjustment approvals.

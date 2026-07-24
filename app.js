@@ -600,12 +600,18 @@ function hoursBetween(start, end) {
   if (e < s) e += 24 * 60;
   return Math.max(0, (e - s) / 60);
 }
-function deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes) {
+function deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes, statusOverride = '') {
+  const selectedStatus = statusOverride || 'Present';
+  if (['Absent', 'Leave Without Pay'].includes(selectedStatus)) {
+    return { worked: 0, late: 0, undertime: 0, ot: 0, status: selectedStatus };
+  }
   const sched = state.schedules.find(s => s.employee_id === employeeId && s.schedule_date === date);
-  const worked = Math.max(0, hoursBetween(timeIn, timeOut) - Number(breakMinutes || 0) / 60);
-  let late = 0, undertime = 0, ot = 0, status = 'Present';
-  if (!timeIn || !timeOut) status = 'Incomplete';
-  if (sched && !sched.is_rest_day) {
+  const worked = selectedStatus === 'Half Day'
+    ? Math.max(0, Math.min(4, hoursBetween(timeIn, timeOut) - Number(breakMinutes || 0) / 60))
+    : Math.max(0, hoursBetween(timeIn, timeOut) - Number(breakMinutes || 0) / 60);
+  let late = 0, undertime = 0, ot = 0, status = selectedStatus;
+  if ((!timeIn || !timeOut) && !['Holiday', 'Rest Day', 'Leave With Pay'].includes(selectedStatus)) status = 'Incomplete';
+  if (sched && !sched.is_rest_day && !['Holiday', 'Rest Day', 'Leave With Pay'].includes(selectedStatus)) {
     const start = minutesFromTime(sched.start_time);
     const end = minutesFromTime(sched.end_time);
     const tin = minutesFromTime(timeIn);
@@ -615,7 +621,7 @@ function deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes) {
     if (tout !== null && end !== null) undertime = Math.max(0, end - tout);
     const schedHours = Math.max(0, hoursBetween(sched.start_time, sched.end_time) - 1);
     ot = Math.max(0, worked - schedHours);
-  } else {
+  } else if (worked > 8) {
     ot = Math.max(0, worked - 8);
   }
   return { worked, late, undertime, ot, status };
@@ -636,6 +642,7 @@ function openAttendanceForm(id = '') {
     <div class="form-grid">
       <label>Employee<select id="attEmployee">${employeeOptions(a.employee_id)}</select></label>
       ${input('Date', 'attDate', a.attendance_date || new Date().toISOString().slice(0,10), 'date')}
+      ${selectInput('Status', 'attStatus', [['Present','Present'],['Absent','Absent'],['Half Day','Half Day'],['Rest Day','Rest Day'],['Holiday','Holiday'],['Leave With Pay','Leave With Pay'],['Leave Without Pay','Leave Without Pay'],['Incomplete','Incomplete']], a.status || 'Present')}
       ${input('Time In', 'attIn', a.time_in || '08:00', 'time')}
       ${input('Time Out', 'attOut', a.time_out || '17:00', 'time')}
       ${input('Break Minutes', 'attBreak', a.break_minutes ?? 60, 'number')}
@@ -648,12 +655,13 @@ async function saveAttendance(id = '') {
   try {
     const employeeId = document.getElementById('attEmployee').value;
     const date = document.getElementById('attDate').value;
+    const statusOverride = document.getElementById('attStatus').value;
     const timeIn = document.getElementById('attIn').value;
     const timeOut = document.getElementById('attOut').value;
     const breakMinutes = Number(document.getElementById('attBreak').value || 0);
-    const d = deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes);
+    const d = deriveAttendance(employeeId, date, timeIn, timeOut, breakMinutes, statusOverride);
     const payload = {
-      company_id: company.id, employee_id: employeeId, attendance_date: date, time_in: timeIn || null, time_out: timeOut || null,
+      company_id: company.id, employee_id: employeeId, attendance_date: date, time_in: ['Absent','Leave Without Pay'].includes(d.status) ? null : (timeIn || null), time_out: ['Absent','Leave Without Pay'].includes(d.status) ? null : (timeOut || null),
       break_minutes: breakMinutes, work_mode: document.getElementById('attMode').value, remarks: document.getElementById('attRemarks').value.trim(),
       hours_worked: d.worked, late_minutes: d.late, undertime_minutes: d.undertime, overtime_hours: d.ot, status: d.status
     };
@@ -707,6 +715,11 @@ async function saveLeave(id = '') {
 }
 
 function renderPayroll() {
+  const options = getPayrollLocalOptions();
+  const adjustmentRows = state.employees.filter(e => e.status === 'Active').map(e => {
+    const a = getAdjustment(e.id);
+    return `<tr><td>${escapeHtml(getEmployeeName(e.id))}</td><td>${money(totalAllowance(a))}</td><td>${money(totalLoanDeduction(a))}</td><td class="actions"><button class="btn secondary" onclick="openPayrollAdjustmentForm('${e.id}')">Edit</button><button class="btn danger" onclick="clearPayrollAdjustment('${e.id}')">Clear</button></td></tr>`;
+  }).join('');
   document.getElementById('payrollView').innerHTML = `
     <div class="grid two">
       <div class="card"><h3>Process Payroll</h3>
@@ -716,9 +729,13 @@ function renderPayroll() {
           ${input('Period Start', 'payStart', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10), 'date')}
           ${input('Period End', 'payEnd', new Date(new Date().getFullYear(), new Date().getMonth()+1, 0).toISOString().slice(0,10), 'date')}
         </div>
+        <p class="small">Mode: <strong>${payrollModeLabel(options.payroll_mode)}</strong> • Auto tax: <strong>${options.auto_tax === 'true' ? 'Enabled' : 'Off'}</strong></p>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.4</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Employee deductions auto-compute SSS, PhilHealth, and Pag-IBIG only when the employee has DTR/gross pay in the payroll period. No DTR or zero gross pay means zero government deductions. Employer shares, EC, government report, payroll summary, and 13th month reports are available under Reports.</p></div>
+      <div class="card"><h3>Payroll Rules v2.5</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments.</p></div>
+    </div>
+    <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">Local per-employee adjustments for this browser. Use for demo or quick client testing; production should store these in Supabase tables.</p>
+      ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
@@ -727,12 +744,61 @@ function renderPayroll() {
       </tr>`).join('')}</tbody></table></div>` : empty('No payroll run yet.')}
     </div>`;
 }
+function openPayrollAdjustmentForm(employeeId) {
+  const emp = getEmployee(employeeId) || {};
+  const a = getAdjustment(employeeId);
+  modal(`Payroll Adjustments: ${getEmployeeName(employeeId)}`, `
+    <div class="form-grid">
+      ${input('Rice Allowance', 'adjRice', a.rice_allowance, 'number', '', 'step="0.01"')}
+      ${input('Transportation Allowance', 'adjTransport', a.transport_allowance, 'number', '', 'step="0.01"')}
+      ${input('Meal Allowance', 'adjMeal', a.meal_allowance, 'number', '', 'step="0.01"')}
+      ${input('Communication Allowance', 'adjComm', a.communication_allowance, 'number', '', 'step="0.01"')}
+      ${input('Other Allowance', 'adjOtherAllow', a.other_allowance, 'number', '', 'step="0.01"')}
+      ${input('Cash Advance', 'adjCash', a.cash_advance, 'number', '', 'step="0.01"')}
+      ${input('SSS Loan', 'adjSssLoan', a.sss_loan, 'number', '', 'step="0.01"')}
+      ${input('Pag-IBIG Loan', 'adjPagibigLoan', a.pagibig_loan, 'number', '', 'step="0.01"')}
+      ${input('Company Loan', 'adjCompanyLoan', a.company_loan, 'number', '', 'step="0.01"')}
+      ${input('Other Deduction', 'adjOtherDed', a.other_deduction, 'number', '', 'step="0.01"')}
+    </div>
+    <div class="form-actions"><button class="btn primary" onclick="savePayrollAdjustment('${employeeId}')">Save Adjustment</button></div>`);
+}
+function savePayrollAdjustment(employeeId) {
+  const all = getPayrollAdjustments();
+  all[employeeId] = {
+    rice_allowance: Number(document.getElementById('adjRice').value || 0),
+    transport_allowance: Number(document.getElementById('adjTransport').value || 0),
+    meal_allowance: Number(document.getElementById('adjMeal').value || 0),
+    communication_allowance: Number(document.getElementById('adjComm').value || 0),
+    other_allowance: Number(document.getElementById('adjOtherAllow').value || 0),
+    cash_advance: Number(document.getElementById('adjCash').value || 0),
+    sss_loan: Number(document.getElementById('adjSssLoan').value || 0),
+    pagibig_loan: Number(document.getElementById('adjPagibigLoan').value || 0),
+    company_loan: Number(document.getElementById('adjCompanyLoan').value || 0),
+    other_deduction: Number(document.getElementById('adjOtherDed').value || 0)
+  };
+  savePayrollAdjustments(all);
+  closeModal(); toast('Payroll adjustment saved.'); renderPayroll();
+}
+function clearPayrollAdjustment(employeeId) {
+  if (!confirm('Clear adjustments for this employee?')) return;
+  const all = getPayrollAdjustments();
+  delete all[employeeId];
+  savePayrollAdjustments(all);
+  toast('Payroll adjustment cleared.'); renderPayroll();
+}
 async function processPayroll() {
   try {
     const start = document.getElementById('payStart').value;
     const end = document.getElementById('payEnd').value;
     const periodLabel = document.getElementById('payPeriodLabel').value.trim();
     const payDate = document.getElementById('payDate').value;
+    const options = getPayrollLocalOptions();
+    const duplicate = state.payrollRuns.find(r => r.period_start === start && r.period_end === end && r.period_label === periodLabel);
+    if (duplicate && !confirm('Payroll run for this period/label already exists. Continue and create another run?')) return;
+    if (options.payroll_mode !== 'monthly_fixed') {
+      const hasAnyDTR = state.attendance.some(a => a.attendance_date >= start && a.attendance_date <= end);
+      if (!hasAnyDTR && !confirm('No DTR found in this period. This will compute zero pay for attendance/daily mode. Continue?')) return;
+    }
     const items = state.employees.filter(e => e.status === 'Active').map(e => computePayrollItem(e, start, end));
     const totals = items.reduce((acc, x) => {
       acc.gross += x.gross_pay; acc.deductions += x.total_deductions; acc.net += x.net_pay; return acc;
@@ -811,33 +877,133 @@ function getPayrollEmployerShares(item) {
     pagibig_er: computePagibigEmployerShare(monthlyBasis)
   };
 }
+
+
+function getPayrollLocalOptions() {
+  const defaults = { payroll_mode: 'attendance', auto_tax: 'false' };
+  if (!company?.id) return defaults;
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(`e4u_payroll_options_${company.id}`) || '{}') };
+  } catch (_) {
+    return defaults;
+  }
+}
+function savePayrollLocalOptions(options) {
+  if (!company?.id) return;
+  localStorage.setItem(`e4u_payroll_options_${company.id}`, JSON.stringify(options));
+}
+function adjustmentDefaults() {
+  return {
+    rice_allowance: 0,
+    transport_allowance: 0,
+    meal_allowance: 0,
+    communication_allowance: 0,
+    other_allowance: 0,
+    cash_advance: 0,
+    sss_loan: 0,
+    pagibig_loan: 0,
+    company_loan: 0,
+    other_deduction: 0
+  };
+}
+function getPayrollAdjustments() {
+  if (!company?.id) return {};
+  try {
+    return JSON.parse(localStorage.getItem(`e4u_payroll_adjustments_${company.id}`) || '{}');
+  } catch (_) {
+    return {};
+  }
+}
+function savePayrollAdjustments(adjustments) {
+  if (!company?.id) return;
+  localStorage.setItem(`e4u_payroll_adjustments_${company.id}`, JSON.stringify(adjustments));
+}
+function getAdjustment(employeeId) {
+  const all = getPayrollAdjustments();
+  return { ...adjustmentDefaults(), ...(all[employeeId] || {}) };
+}
+function totalAllowance(adj) {
+  return roundMoney(Number(adj.rice_allowance || 0) + Number(adj.transport_allowance || 0) + Number(adj.meal_allowance || 0) + Number(adj.communication_allowance || 0) + Number(adj.other_allowance || 0));
+}
+function totalLoanDeduction(adj) {
+  return roundMoney(Number(adj.cash_advance || 0) + Number(adj.sss_loan || 0) + Number(adj.pagibig_loan || 0) + Number(adj.company_loan || 0) + Number(adj.other_deduction || 0));
+}
+function annualCompensationTaxPH(taxableAnnual) {
+  const x = Number(taxableAnnual || 0);
+  if (x <= 250000) return 0;
+  if (x <= 400000) return (x - 250000) * 0.15;
+  if (x <= 800000) return 22500 + (x - 400000) * 0.20;
+  if (x <= 2000000) return 102500 + (x - 800000) * 0.25;
+  if (x <= 8000000) return 402500 + (x - 2000000) * 0.30;
+  return 2202500 + (x - 8000000) * 0.35;
+}
+function monthlyWithholdingTaxEstimate(taxableMonthly) {
+  return roundMoney(annualCompensationTaxPH(Number(taxableMonthly || 0) * 12) / 12);
+}
+function isPaidAttendanceStatus(status = '') {
+  return ['Present', 'Half Day', 'Holiday', 'Rest Day', 'Leave With Pay'].includes(status || 'Present');
+}
+function isUnpaidAttendanceStatus(status = '') {
+  return ['Absent', 'Leave Without Pay'].includes(status || '');
+}
+function attendanceDayValue(record = {}) {
+  if (!isPaidAttendanceStatus(record.status)) return 0;
+  if (record.status === 'Half Day') return 0.5;
+  return 1;
+}
+function payrollModeLabel(mode) {
+  return ({ attendance: 'Attendance-Based', daily: 'Daily Rate', monthly_fixed: 'Monthly Fixed' })[mode] || 'Attendance-Based';
+}
+function getOtherPayFromItem(item) {
+  return roundMoney(Number(item.gross_pay || 0) - Number(item.basic_pay || 0) - Number(item.overtime_pay || 0));
+}
 function computePayrollItem(e, start, end) {
-  const records = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end && a.status !== 'Absent');
-  const daysWorked = new Set(records.map(r => r.attendance_date)).size;
-  const otHours = records.reduce((sum, r) => sum + Number(r.overtime_hours || 0), 0);
-  const lateMins = records.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0);
-  const undertimeMins = records.reduce((sum, r) => sum + Number(r.undertime_minutes || 0), 0);
-  const daily = Number(e.daily_rate || (Number(e.basic_salary || 0) / Number(state.settings?.standard_days || 26)));
+  const options = getPayrollLocalOptions();
+  const allRecords = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end);
+  const paidRecords = allRecords.filter(r => isPaidAttendanceStatus(r.status));
+  const unpaidRecords = allRecords.filter(r => isUnpaidAttendanceStatus(r.status));
+  const paidDays = paidRecords.reduce((sum, r) => sum + attendanceDayValue(r), 0);
+  const absentDays = unpaidRecords.length;
+  const otHours = paidRecords.reduce((sum, r) => sum + Number(r.overtime_hours || 0), 0);
+  const lateMins = paidRecords.reduce((sum, r) => sum + Number(r.late_minutes || 0), 0);
+  const undertimeMins = paidRecords.reduce((sum, r) => sum + Number(r.undertime_minutes || 0), 0);
+  const monthlyBasis = getMonthlySalaryBasis(e);
+  const standardDays = Number(state.settings?.standard_days || 26);
+  const daily = Number(e.daily_rate || (monthlyBasis / standardDays));
   const hourly = Number(e.hourly_rate || daily / 8);
-  const basicPay = roundMoney(daysWorked * daily);
+  const adj = getAdjustment(e.id);
+  const allowances = totalAllowance(adj);
+  const loanDeductions = totalLoanDeduction(adj);
+  let basicPay = 0;
+  let absentDeduction = 0;
+  if (options.payroll_mode === 'monthly_fixed') {
+    basicPay = monthlyBasis;
+    absentDeduction = roundMoney(absentDays * daily);
+  } else {
+    basicPay = roundMoney(paidDays * daily);
+  }
+  const holidayDays = paidRecords.filter(r => r.status === 'Holiday').length;
+  const restDayHours = paidRecords.filter(r => r.status === 'Rest Day').reduce((sum, r) => sum + Number(r.hours_worked || 0), 0);
+  const holidayPay = roundMoney(holidayDays * daily); // demo estimate
+  const restDayPay = roundMoney(restDayHours * hourly * 0.30); // extra premium estimate
   const otPay = roundMoney(otHours * hourly * Number(state.settings?.overtime_multiplier || 1.25));
   const lateDeduction = roundMoney(lateMins / 60 * hourly);
-  const undertimeDeduction = roundMoney(undertimeMins / 60 * hourly);
-  const gross = roundMoney(basicPay + otPay);
-  const monthlyBasis = getMonthlySalaryBasis(e);
-  const hasPayrollEarnings = daysWorked > 0 && gross > 0;
+  const undertimeDeduction = roundMoney((undertimeMins / 60 * hourly) + absentDeduction);
+  const gross = roundMoney(basicPay + otPay + holidayPay + restDayPay + allowances);
+  const hasPayrollEarnings = gross > 0 && (paidDays > 0 || options.payroll_mode === 'monthly_fixed' || allowances > 0);
   const sss = hasPayrollEarnings ? computeSSSEmployeeShare(monthlyBasis) : 0;
   const philhealth = hasPayrollEarnings ? computePhilHealthEmployeeShare(monthlyBasis) : 0;
   const pagibig = hasPayrollEarnings ? computePagibigEmployeeShare(monthlyBasis) : 0;
-  const withholdingTax = 0;
-  const cashAdvance = 0;
+  const taxableMonthly = Math.max(0, gross - sss - philhealth - pagibig);
+  const withholdingTax = hasPayrollEarnings && options.auto_tax === 'true' ? monthlyWithholdingTaxEstimate(taxableMonthly) : 0;
+  const cashAdvance = loanDeductions;
   const totalDeductions = hasPayrollEarnings
     ? roundMoney(lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance)
     : 0;
   const net = roundMoney(Math.max(0, gross - totalDeductions));
   return {
-    employee_id: e.id, days_worked: daysWorked, overtime_hours: otHours, late_minutes: lateMins, undertime_minutes: undertimeMins,
-    basic_pay: basicPay, overtime_pay: otPay, gross_pay: gross, late_deduction: lateDeduction, undertime_deduction: undertimeDeduction,
+    employee_id: e.id, days_worked: paidDays, overtime_hours: otHours, late_minutes: lateMins, undertime_minutes: undertimeMins,
+    basic_pay: roundMoney(basicPay), overtime_pay: otPay, gross_pay: gross, late_deduction: lateDeduction, undertime_deduction: undertimeDeduction,
     sss, philhealth, pagibig, withholding_tax: withholdingTax, cash_advance: cashAdvance, total_deductions: totalDeductions, net_pay: net
   };
 }
@@ -847,15 +1013,16 @@ function viewPayrollRun(id) {
   const totals = items.reduce((acc, i) => {
     const er = getPayrollEmployerShares(i);
     acc.sss += Number(i.sss || 0); acc.philhealth += Number(i.philhealth || 0); acc.pagibig += Number(i.pagibig || 0);
+    acc.tax += Number(i.withholding_tax || 0); acc.cash += Number(i.cash_advance || 0); acc.otherPay += getOtherPayFromItem(i);
     acc.sss_er += er.sss_er; acc.ec += er.ec; acc.philhealth_er += er.philhealth_er; acc.pagibig_er += er.pagibig_er;
     return acc;
-  }, { sss: 0, philhealth: 0, pagibig: 0, sss_er: 0, ec: 0, philhealth_er: 0, pagibig_er: 0 });
+  }, { sss: 0, philhealth: 0, pagibig: 0, tax: 0, cash: 0, otherPay: 0, sss_er: 0, ec: 0, philhealth_er: 0, pagibig_er: 0 });
   const govSummary = `<div class="grid three" style="margin-bottom:14px;">
-    <div class="card"><h3>Employee Deductions</h3><p>SSS: ${money(totals.sss)}<br>PhilHealth: ${money(totals.philhealth)}<br>Pag-IBIG: ${money(totals.pagibig)}</p></div>
+    <div class="card"><h3>Employee Deductions</h3><p>SSS: ${money(totals.sss)}<br>PhilHealth: ${money(totals.philhealth)}<br>Pag-IBIG: ${money(totals.pagibig)}<br>Tax: ${money(totals.tax)}<br>Loans/Cash: ${money(totals.cash)}</p></div>
     <div class="card"><h3>Employer Share</h3><p>SSS ER: ${money(totals.sss_er)}<br>EC: ${money(totals.ec)}<br>PhilHealth ER: ${money(totals.philhealth_er)}<br>Pag-IBIG ER: ${money(totals.pagibig_er)}</p></div>
     <div class="card"><h3>Total Remittance Estimate</h3><p>SSS+EC: ${money(totals.sss + totals.sss_er + totals.ec)}<br>PhilHealth: ${money(totals.philhealth + totals.philhealth_er)}<br>Pag-IBIG: ${money(totals.pagibig + totals.pagibig_er)}</p></div>
   </div>`;
-  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS EE</th><th>PhilHealth EE</th><th>Pag-IBIG EE</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}${Number(i.days_worked || 0) === 0 ? '<div class="small">No DTR in period</div>' : ''}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>Gross</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Tax</th><th>Cash/Loans</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}${Number(i.days_worked || 0) === 0 ? '<div class="small">No paid DTR in period</div>' : ''}</td><td>${i.days_worked}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.withholding_tax)}</td><td>${money(i.cash_advance)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
 function renderPayslips() {
@@ -875,10 +1042,11 @@ function payslipHtml(runId) {
   const items = state.payrollItems.filter(i => i.payroll_run_id === runId);
   return items.map(i => {
     const emp = getEmployee(i.employee_id) || {};
+    const otherPay = getOtherPayFromItem(i);
     return `<div class="payslip">
       <div class="payslip-head"><div><h3>${escapeHtml(company.name)}</h3><p>${escapeHtml(company.address || '')}</p></div><div><strong>PAYSLIP</strong><p>${escapeHtml(run.period_label)}</p></div></div>
-      <div class="grid two"><div><p><strong>${escapeHtml(getEmployeeName(i.employee_id))}</strong><br>${escapeHtml(emp.position || '')} • ${escapeHtml(emp.department || '')}</p><p>Pay Date: ${formatDate(run.pay_date)}</p></div>
-      <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime</span><strong>${money(i.undertime_deduction)}</strong><span>SSS</span><strong>${money(i.sss)}</strong><span>PhilHealth</span><strong>${money(i.philhealth)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
+      <div class="grid two"><div><p><strong>${escapeHtml(getEmployeeName(i.employee_id))}</strong><br>${escapeHtml(emp.position || '')} • ${escapeHtml(emp.department || '')}</p><p>Pay Date: ${formatDate(run.pay_date)}<br>Days Paid: ${Number(i.days_worked || 0).toFixed(2)}</p></div>
+      <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Allowances / Holiday / Rest Day</span><strong>${money(otherPay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime / Absent</span><strong>${money(i.undertime_deduction)}</strong><span>SSS</span><strong>${money(i.sss)}</strong><span>PhilHealth</span><strong>${money(i.philhealth)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Withholding Tax</span><strong>${money(i.withholding_tax)}</strong><span>Cash Advance / Loans</span><strong>${money(i.cash_advance)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
     </div>`;
   }).join('') || empty('No payslip items found.');
 }
@@ -891,7 +1059,7 @@ function renderCOE() {
   const defaultSignatory = state.settings?.payroll_officer || company.contact_person || profile?.full_name || '';
   document.getElementById('coeView').innerHTML = `
     <div class="grid two">
-      <div class="card"><h3>Certificate of Employment Generator v2.4</h3>
+      <div class="card"><h3>Certificate of Employment Generator v2.5</h3>
         <p>Generate COE without compensation, with compensation, for loan, visa/travel, or employment requirement.</p>
         <div class="form-grid">
           <label>Employee<select id="coeEmployee" onchange="updateCOEPreview()">${options}</select></label>
@@ -981,7 +1149,9 @@ function renderReports() {
       <div class="card"><h3>Payroll Summary</h3><p>Gross, deductions, and net pay by payroll run.</p><button class="btn primary" onclick="exportPayrollSummaryCSV()">Download CSV</button></div>
       <div class="card"><h3>Government Contributions</h3><p>SSS, PhilHealth, Pag-IBIG employee/employer report.</p><button class="btn primary" onclick="exportGovernmentContributionsCSV()">Download CSV</button></div>
       <div class="card"><h3>13th Month Estimate</h3><p>Basic pay totals divided by 12 from loaded payroll runs.</p><button class="btn primary" onclick="export13thMonthCSV()">Download CSV</button></div>
-      <div class="card"><h3>Payroll Items</h3><p>Export raw payroll details.</p><button class="btn secondary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
+      <div class="card"><h3>Tax & Loan Summary</h3><p>Withholding tax, cash advances, loans and other deductions.</p><button class="btn primary" onclick="exportTaxLoanSummaryCSV()">Download CSV</button></div>
+      <div class="card"><h3>Bank Payroll Upload</h3><p>Employee net pay listing for bank upload preparation.</p><button class="btn primary" onclick="exportBankUploadCSV()">Download CSV</button></div>
+      <div class="card"><h3>Payroll Items</h3><p>Export raw payroll details.</p><button class="btn primary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
       <div class="card"><h3>Full Backup</h3><p>Download JSON backup from Supabase-loaded data.</p><button class="btn secondary" onclick="exportBackupJSON()">Backup JSON</button></div>
     </div>`;
 }
@@ -1037,19 +1207,43 @@ function export13thMonthCSV() {
   }));
   downloadFile('13th_month_estimate.csv', toCSV(rows), 'text/csv');
 }
+function exportTaxLoanSummaryCSV() {
+  const rows = state.payrollItems.map(i => {
+    const run = state.payrollRuns.find(r => r.id === i.payroll_run_id) || {};
+    return {
+      period: run.period_label || '', pay_date: run.pay_date || '', employee: getEmployeeName(i.employee_id),
+      withholding_tax: i.withholding_tax || 0, cash_advance_loans: i.cash_advance || 0, total_deductions: i.total_deductions || 0, net_pay: i.net_pay || 0
+    };
+  });
+  downloadFile(`tax_loan_summary_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+function exportBankUploadCSV() {
+  const rows = state.payrollItems.map(i => {
+    const run = state.payrollRuns.find(r => r.id === i.payroll_run_id) || {};
+    const emp = getEmployee(i.employee_id) || {};
+    return {
+      period: run.period_label || '', employee_no: emp.employee_no || '', employee: getEmployeeName(i.employee_id), bank_name: '', bank_account_no: '', net_pay: i.net_pay || 0
+    };
+  });
+  downloadFile(`bank_payroll_upload_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+
 function renderSettings() {
   const s = state.settings || defaultSettings();
+  const local = getPayrollLocalOptions();
   document.getElementById('settingsView').innerHTML = `
-    <div class="card"><h3>Payroll Settings</h3>
+    <div class="card"><h3>Payroll Settings v2.5</h3>
       <div class="form-grid">
         ${input('Standard Working Days / Month', 'setDays', s.standard_days, 'number', '', 'step="0.01"')}
         ${input('Grace Minutes', 'setGrace', s.grace_minutes, 'number')}
         ${input('OT Multiplier', 'setOt', s.overtime_multiplier, 'number', '', 'step="0.01"')}
         ${input('Pag-IBIG Employee Share Cap / Default', 'setPagibig', s.default_pagibig, 'number', '', 'step="0.01"')}
-        ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '')}
+        ${selectInput('Payroll Mode', 'setPayrollMode', [['attendance','Attendance-Based'],['daily','Daily Rate'],['monthly_fixed','Monthly Fixed']], local.payroll_mode)}
+        ${selectInput('Auto Withholding Tax Estimate', 'setAutoTax', [['false','Off'],['true','On']], local.auto_tax)}
+        ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '', 'text', 'full-span')}
       </div>
+      <p class="small">Tax is an estimate for payroll preview only. Validate actual withholding against BIR rules before filing.</p>
       <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
-      <p class="small">v2.4: Fix applied. SSS, PhilHealth, and Pag-IBIG employee deductions auto-compute only when there is DTR/gross pay for the period. No DTR or zero gross pay = zero government deductions.</p>
     </div>`;
 }
 async function saveSettings() {
@@ -1063,6 +1257,7 @@ async function saveSettings() {
       payroll_officer: document.getElementById('setOfficer').value.trim(),
       updated_at: new Date().toISOString()
     };
+    savePayrollLocalOptions({ payroll_mode: document.getElementById('setPayrollMode').value, auto_tax: document.getElementById('setAutoTax').value });
     await sb(supabaseClient.from('settings').upsert(payload, { onConflict: 'company_id' }), 'Cannot save settings');
     toast('Settings saved.'); await loadAllData();
   } catch (error) { toast(error.message); }
