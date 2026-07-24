@@ -259,6 +259,42 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
   border-bottom: 1px solid var(--line);
 }
 #modalBody { padding: 18px; max-height: min(75vh, 720px); overflow: auto; }
+
+.coe-document {
+  max-width: 850px;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 42px;
+  box-shadow: 0 8px 22px rgba(15, 107, 63, .05);
+}
+.coe-company {
+  text-align: center;
+  border-bottom: 2px solid var(--dark);
+  padding-bottom: 16px;
+  margin-bottom: 36px;
+}
+.coe-company h2 { margin-bottom: 6px; font-size: 24px; }
+.coe-company p { margin: 2px 0; }
+.coe-document h1 {
+  text-align: center;
+  margin: 34px 0;
+  letter-spacing: .08em;
+  font-size: 24px;
+}
+.coe-document p { font-size: 15px; line-height: 1.9; text-align: justify; }
+.coe-signature {
+  margin-top: 80px;
+  width: min(340px, 100%);
+  border-top: 1px solid var(--dark);
+  padding-top: 8px;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+.coe-signature span { color: var(--muted); font-size: 13px; }
+
 .payslip {
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -288,5 +324,41 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
   .app-shell { display: block; }
   .main { padding: 0; }
   body { background: white; }
-  .card, .payslip { box-shadow: none; break-inside: avoid; }
+  .card, 
+.coe-document {
+  max-width: 850px;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 42px;
+  box-shadow: 0 8px 22px rgba(15, 107, 63, .05);
+}
+.coe-company {
+  text-align: center;
+  border-bottom: 2px solid var(--dark);
+  padding-bottom: 16px;
+  margin-bottom: 36px;
+}
+.coe-company h2 { margin-bottom: 6px; font-size: 24px; }
+.coe-company p { margin: 2px 0; }
+.coe-document h1 {
+  text-align: center;
+  margin: 34px 0;
+  letter-spacing: .08em;
+  font-size: 24px;
+}
+.coe-document p { font-size: 15px; line-height: 1.9; text-align: justify; }
+.coe-signature {
+  margin-top: 80px;
+  width: min(340px, 100%);
+  border-top: 1px solid var(--dark);
+  padding-top: 8px;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+.coe-signature span { color: var(--muted); font-size: 13px; }
+
+.payslip { box-shadow: none; break-inside: avoid; }
 }

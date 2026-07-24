@@ -94,6 +94,9 @@ function getEmployeeName(id) {
   const emp = getEmployee(id);
   return emp ? `${emp.last_name}, ${emp.first_name} ${emp.middle_name || ''}`.trim() : 'Unknown Employee';
 }
+function getEmployeeFullName(emp = {}) {
+  return `${emp.first_name || ''} ${emp.middle_name || ''} ${emp.last_name || ''}`.replace(/\s+/g, ' ').trim();
+}
 function employeeOptions(selected = '') {
   const rows = state.employees.filter(e => e.status === 'Active');
   return rows.map(e => `<option value="${e.id}" ${selected === e.id ? 'selected' : ''}>${escapeHtml(getEmployeeName(e.id))}</option>`).join('');
@@ -298,7 +301,7 @@ function setView(view) {
   document.getElementById('pageTitle').textContent = ({
     dashboard: 'Dashboard', company: 'Company Profile', employees: 'Employee Masterfile', users: 'Users & Roles',
     schedule: 'Scheduling', attendance: 'Timekeeping / DTR', leave: 'Leave Management', payroll: 'Payroll Processing',
-    payslips: 'Payslips', reports: 'Reports', settings: 'Settings'
+    payslips: 'Payslips', coe: 'Certificate of Employment', reports: 'Reports', settings: 'Settings'
   })[view];
   render();
 }
@@ -314,6 +317,7 @@ function render() {
   renderLeave();
   renderPayroll();
   renderPayslips();
+  renderCOE();
   renderReports();
   renderSettings();
 }
@@ -797,6 +801,86 @@ function payslipHtml(runId) {
       <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime</span><strong>${money(i.undertime_deduction)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
     </div>`;
   }).join('') || empty('No payslip items found.');
+}
+
+function renderCOE() {
+  const activeEmployees = state.employees.filter(e => e.status === 'Active' || e.status === 'On Leave' || e.status === 'Resigned' || e.status === 'Inactive');
+  const options = activeEmployees.map(e => `<option value="${e.id}">${escapeHtml(getEmployeeFullName(e) || getEmployeeName(e.id))}</option>`).join('');
+  const selected = activeEmployees[0]?.id || '';
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultSignatory = state.settings?.payroll_officer || company.contact_person || profile?.full_name || '';
+  document.getElementById('coeView').innerHTML = `
+    <div class="grid two">
+      <div class="card"><h3>Certificate of Employment Generator</h3>
+        <p>Generate a clean COE using the company profile and employee masterfile.</p>
+        <div class="form-grid">
+          <label>Employee<select id="coeEmployee" onchange="updateCOEPreview()">${options}</select></label>
+          ${input('Date Issued', 'coeDate', today, 'date')}
+          ${input('Purpose', 'coePurpose', 'employment requirement')}
+          ${input('Place Issued', 'coePlace', company.address || '')}
+          ${input('Authorized Signatory', 'coeSignatory', defaultSignatory)}
+          ${input('Signatory Position', 'coeSignatoryPosition', 'Authorized Representative')}
+        </div>
+        <div class="form-actions">
+          <button class="btn secondary" onclick="updateCOEPreview()">Generate Preview</button>
+          <button class="btn primary" onclick="printCOE()">Print COE</button>
+        </div>
+      </div>
+      <div class="card"><h3>COE Notes</h3><p>Before printing, confirm the employee position, department, date hired, and company address in Employee Masterfile and Company Profile.</p></div>
+    </div>
+    <div class="card" style="margin-top:18px;">
+      <div id="coePreview">${selected ? coeHtml(selected, today, 'employment requirement', company.address || '', defaultSignatory, 'Authorized Representative') : empty('No employees available for COE.')}</div>
+    </div>`;
+}
+function updateCOEPreview() {
+  const el = document.getElementById('coePreview');
+  if (!el) return;
+  const employeeId = document.getElementById('coeEmployee')?.value;
+  const dateIssued = document.getElementById('coeDate')?.value || new Date().toISOString().slice(0, 10);
+  const purpose = document.getElementById('coePurpose')?.value.trim() || 'employment requirement';
+  const placeIssued = document.getElementById('coePlace')?.value.trim() || company.address || '';
+  const signatory = document.getElementById('coeSignatory')?.value.trim() || company.contact_person || profile?.full_name || '';
+  const signatoryPosition = document.getElementById('coeSignatoryPosition')?.value.trim() || 'Authorized Representative';
+  el.innerHTML = employeeId ? coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition) : empty('Select an employee.');
+}
+function coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition) {
+  const emp = getEmployee(employeeId) || {};
+  const fullName = getEmployeeFullName(emp) || getEmployeeName(employeeId);
+  const position = emp.position || 'Employee';
+  const department = emp.department || '';
+  const dateHired = emp.date_hired ? formatDate(emp.date_hired) : 'the company records';
+  const statusText = emp.status === 'Active' ? 'is currently employed' : `has employment status: ${emp.status || 'on record'}`;
+  const issued = formatDate(dateIssued);
+  const place = placeIssued || company.address || '';
+  return `<div class="coe-document">
+    <div class="coe-company">
+      <h2>${escapeHtml(company.name || 'Company Name')}</h2>
+      <p>${escapeHtml(company.address || '')}</p>
+      <p>${company.tin ? `TIN: ${escapeHtml(company.tin)}` : ''}</p>
+    </div>
+    <h1>CERTIFICATE OF EMPLOYMENT</h1>
+    <p>To Whom It May Concern:</p>
+    <p>This is to certify that <strong>${escapeHtml(fullName)}</strong> ${statusText} with <strong>${escapeHtml(company.name || 'the company')}</strong> as <strong>${escapeHtml(position)}</strong>${department ? ` under the ${escapeHtml(department)} department` : ''}. Based on company records, the employee's date hired is <strong>${escapeHtml(dateHired)}</strong>.</p>
+    <p>This certification is issued upon the request of the above-mentioned employee for <strong>${escapeHtml(purpose)}</strong> and for whatever legal purpose it may serve.</p>
+    <p>Issued this <strong>${escapeHtml(issued)}</strong>${place ? ` at <strong>${escapeHtml(place)}</strong>` : ''}.</p>
+    <div class="coe-signature">
+      <strong>${escapeHtml(signatory || 'Authorized Signatory')}</strong>
+      <span>${escapeHtml(signatoryPosition || 'Authorized Representative')}</span>
+    </div>
+  </div>`;
+}
+function printCOE() {
+  updateCOEPreview();
+  const html = document.getElementById('coePreview')?.innerHTML || '';
+  if (!html || html.includes('empty')) return toast('Generate a COE first.');
+  const win = window.open('', '_blank', 'width=900,height=1100');
+  if (!win) return toast('Allow pop-ups to print COE.');
+  win.document.write(`<!doctype html><html><head><title>Certificate of Employment</title><style>
+    body{font-family:Arial,sans-serif;margin:0;padding:40px;color:#111;background:#fff}.coe-document{max-width:780px;margin:auto;border:1px solid #ddd;padding:44px;min-height:900px}.coe-company{text-align:center;border-bottom:2px solid #111;margin-bottom:42px;padding-bottom:16px}.coe-company h2{margin:0 0 6px;font-size:22px}.coe-company p{margin:2px 0;color:#333}.coe-document h1{text-align:center;font-size:24px;letter-spacing:1px;margin:36px 0}.coe-document p{font-size:15px;line-height:1.9;text-align:justify}.coe-signature{margin-top:90px;display:grid;gap:4px;width:320px;border-top:1px solid #111;padding-top:8px;text-align:center}.coe-signature span{font-size:13px;color:#444}@media print{body{padding:0}.coe-document{border:0;min-height:0}}
+  </style></head><body>${html}</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
 }
 
 function renderReports() {

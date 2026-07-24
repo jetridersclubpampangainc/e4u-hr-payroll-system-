@@ -1,3 +1,7 @@
+E4U HR & Payroll System v2.1
+
+Added: Certificate of Employment (COE) generator with printable COE template.
+
 E4U HR & Payroll Management System v2
 Cloud Prototype with Login + Supabase Database
 

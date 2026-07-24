@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e4u-hr-payroll-v2';
+const CACHE_NAME = 'e4u-hr-payroll-v2-1';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.json', './assets/icon.svg'];
 
 self.addEventListener('install', event => {
@@ -8,3 +8,5 @@ self.addEventListener('install', event => {
 self.addEventListener('fetch', event => {
   event.respondWith(caches.match(event.request).then(response => response || fetch(event.request)));
 });
+
+// v2.1: COE module cache refresh
