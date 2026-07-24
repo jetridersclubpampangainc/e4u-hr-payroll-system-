@@ -718,7 +718,7 @@ function renderPayroll() {
         </div>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.3</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Employee deductions auto-compute SSS, PhilHealth, and Pag-IBIG. Employer shares, EC, government report, payroll summary, and 13th month reports are available under Reports.</p></div>
+      <div class="card"><h3>Payroll Rules v2.4</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Employee deductions auto-compute SSS, PhilHealth, and Pag-IBIG only when the employee has DTR/gross pay in the payroll period. No DTR or zero gross pay means zero government deductions. Employer shares, EC, government report, payroll summary, and 13th month reports are available under Reports.</p></div>
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
@@ -823,14 +823,17 @@ function computePayrollItem(e, start, end) {
   const otPay = roundMoney(otHours * hourly * Number(state.settings?.overtime_multiplier || 1.25));
   const lateDeduction = roundMoney(lateMins / 60 * hourly);
   const undertimeDeduction = roundMoney(undertimeMins / 60 * hourly);
+  const gross = roundMoney(basicPay + otPay);
   const monthlyBasis = getMonthlySalaryBasis(e);
-  const sss = computeSSSEmployeeShare(monthlyBasis);
-  const philhealth = computePhilHealthEmployeeShare(monthlyBasis);
-  const pagibig = computePagibigEmployeeShare(monthlyBasis);
+  const hasPayrollEarnings = daysWorked > 0 && gross > 0;
+  const sss = hasPayrollEarnings ? computeSSSEmployeeShare(monthlyBasis) : 0;
+  const philhealth = hasPayrollEarnings ? computePhilHealthEmployeeShare(monthlyBasis) : 0;
+  const pagibig = hasPayrollEarnings ? computePagibigEmployeeShare(monthlyBasis) : 0;
   const withholdingTax = 0;
   const cashAdvance = 0;
-  const gross = roundMoney(basicPay + otPay);
-  const totalDeductions = roundMoney(lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance);
+  const totalDeductions = hasPayrollEarnings
+    ? roundMoney(lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance)
+    : 0;
   const net = roundMoney(Math.max(0, gross - totalDeductions));
   return {
     employee_id: e.id, days_worked: daysWorked, overtime_hours: otHours, late_minutes: lateMins, undertime_minutes: undertimeMins,
@@ -852,7 +855,7 @@ function viewPayrollRun(id) {
     <div class="card"><h3>Employer Share</h3><p>SSS ER: ${money(totals.sss_er)}<br>EC: ${money(totals.ec)}<br>PhilHealth ER: ${money(totals.philhealth_er)}<br>Pag-IBIG ER: ${money(totals.pagibig_er)}</p></div>
     <div class="card"><h3>Total Remittance Estimate</h3><p>SSS+EC: ${money(totals.sss + totals.sss_er + totals.ec)}<br>PhilHealth: ${money(totals.philhealth + totals.philhealth_er)}<br>Pag-IBIG: ${money(totals.pagibig + totals.pagibig_er)}</p></div>
   </div>`;
-  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS EE</th><th>PhilHealth EE</th><th>Pag-IBIG EE</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS EE</th><th>PhilHealth EE</th><th>Pag-IBIG EE</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}${Number(i.days_worked || 0) === 0 ? '<div class="small">No DTR in period</div>' : ''}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
 function renderPayslips() {
@@ -888,7 +891,7 @@ function renderCOE() {
   const defaultSignatory = state.settings?.payroll_officer || company.contact_person || profile?.full_name || '';
   document.getElementById('coeView').innerHTML = `
     <div class="grid two">
-      <div class="card"><h3>Certificate of Employment Generator v2.3</h3>
+      <div class="card"><h3>Certificate of Employment Generator v2.4</h3>
         <p>Generate COE without compensation, with compensation, for loan, visa/travel, or employment requirement.</p>
         <div class="form-grid">
           <label>Employee<select id="coeEmployee" onchange="updateCOEPreview()">${options}</select></label>
@@ -1046,7 +1049,7 @@ function renderSettings() {
         ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '')}
       </div>
       <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
-      <p class="small">v2.3: SSS, PhilHealth, and Pag-IBIG employee deductions auto-compute during new payroll runs. Employer share and 13th month reports are available under Reports.</p>
+      <p class="small">v2.4: Fix applied. SSS, PhilHealth, and Pag-IBIG employee deductions auto-compute only when there is DTR/gross pay for the period. No DTR or zero gross pay = zero government deductions.</p>
     </div>`;
 }
 async function saveSettings() {
