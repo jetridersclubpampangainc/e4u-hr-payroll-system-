@@ -24,7 +24,10 @@ let state = {
   attendance: [],
   leaves: [],
   payrollRuns: [],
-  payrollItems: []
+  payrollItems: [],
+  payrollAdjustments: {},
+  payrollWorkflow: {},
+  auditLogs: []
 };
 
 function initSupabase() {
@@ -194,7 +197,7 @@ async function loadAllData() {
     }
 
     if (!company) {
-      state = { settings: null, profiles: [], employees: [], schedules: [], attendance: [], leaves: [], payrollRuns: [], payrollItems: [] };
+      state = { settings: null, profiles: [], employees: [], schedules: [], attendance: [], leaves: [], payrollRuns: [], payrollItems: [], payrollAdjustments: {}, payrollWorkflow: {}, auditLogs: [] };
       renderSetupCompany();
       return;
     }
@@ -217,6 +220,7 @@ async function loadAllData() {
     state.leaves = leaves || [];
     state.payrollRuns = payrollRuns || [];
     state.payrollItems = payrollItems || [];
+    await loadProductionAddons();
     document.querySelectorAll('.nav-item').forEach(btn => btn.disabled = false);
     setView(activeView);
     toast('Synced with Supabase.');
@@ -224,6 +228,142 @@ async function loadAllData() {
     console.error(error);
     toast(error.message);
   }
+}
+
+async function optionalTableSelect(table, queryBuilderFactory) {
+  try {
+    const { data, error } = await queryBuilderFactory(supabaseClient.from(table));
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    console.warn(`Optional v2.6 table not ready: ${table}`, error.message || error);
+    return { ok: false, data: [] };
+  }
+}
+
+async function loadProductionAddons() {
+  if (!company?.id || !supabaseClient) return;
+  const [adjustments, workflow, audit] = await Promise.all([
+    optionalTableSelect('payroll_adjustments', qb => qb.select('*').eq('company_id', company.id)),
+    optionalTableSelect('payroll_workflow', qb => qb.select('*').eq('company_id', company.id)),
+    optionalTableSelect('audit_logs', qb => qb.select('*').eq('company_id', company.id).order('created_at', { ascending: false }).limit(200))
+  ]);
+
+  if (adjustments.ok) {
+    const map = {};
+    adjustments.data.forEach(row => { map[row.employee_id] = { ...adjustmentDefaults(), ...row }; });
+    state.payrollAdjustments = map;
+    savePayrollAdjustments(map, true);
+  } else {
+    state.payrollAdjustments = getPayrollAdjustments(true);
+  }
+
+  if (workflow.ok) {
+    const map = {};
+    workflow.data.forEach(row => { map[row.payroll_run_id] = row; });
+    state.payrollWorkflow = map;
+    localStorage.setItem(`e4u_payroll_workflow_${company.id}`, JSON.stringify(map));
+  } else {
+    state.payrollWorkflow = getPayrollWorkflowMap(true);
+  }
+
+  if (audit.ok) state.auditLogs = audit.data;
+  else state.auditLogs = getLocalAuditLogs();
+}
+
+function getLocalAuditLogs() {
+  if (!company?.id) return [];
+  try { return JSON.parse(localStorage.getItem(`e4u_audit_logs_${company.id}`) || '[]'); }
+  catch (_) { return []; }
+}
+
+async function addAuditLog(action, moduleName, recordId = '', details = {}) {
+  if (!company?.id || !session?.user?.id) return;
+  const row = {
+    id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    company_id: company.id,
+    user_id: session.user.id,
+    user_email: session.user.email || profile?.email || '',
+    action,
+    module: moduleName,
+    record_id: recordId || null,
+    details,
+    created_at: new Date().toISOString()
+  };
+  const local = getLocalAuditLogs();
+  local.unshift(row);
+  localStorage.setItem(`e4u_audit_logs_${company.id}`, JSON.stringify(local.slice(0, 300)));
+  state.auditLogs = local.slice(0, 300);
+  try { await supabaseClient.from('audit_logs').insert(row); } catch (error) { console.warn('Audit table fallback:', error.message || error); }
+}
+
+function getPayrollWorkflowMap(fromStorageOnly = false) {
+  if (!company?.id) return {};
+  if (!fromStorageOnly && state.payrollWorkflow && Object.keys(state.payrollWorkflow).length) return state.payrollWorkflow;
+  try { return JSON.parse(localStorage.getItem(`e4u_payroll_workflow_${company.id}`) || '{}'); }
+  catch (_) { return {}; }
+}
+
+function getPayrollWorkflow(runId) {
+  const map = getPayrollWorkflowMap();
+  return map[runId] || { status: 'Draft' };
+}
+
+function payrollStatus(run) {
+  return run.status || getPayrollWorkflow(run.id).status || 'Draft';
+}
+
+function payrollStatusBadge(run) {
+  const status = payrollStatus(run);
+  const type = status === 'Approved' || status === 'Released' ? '' : status === 'Voided' ? 'red' : status === 'For Review' ? 'orange' : 'gray';
+  return badge(status, type);
+}
+
+function payrollWorkflowButtons(run) {
+  const status = payrollStatus(run);
+  const id = run.id;
+  const buttons = [`<button class="btn secondary" onclick="viewPayrollRun('${id}')">View</button>`];
+  if (status === 'Draft') buttons.push(`<button class="btn secondary" onclick="setPayrollStatus('${id}','For Review')">Submit</button>`);
+  if (status === 'For Review') buttons.push(`<button class="btn secondary" onclick="setPayrollStatus('${id}','Approved')">Approve</button>`);
+  if (status === 'Approved') buttons.push(`<button class="btn secondary" onclick="setPayrollStatus('${id}','Released')">Release</button>`);
+  if (status !== 'Voided' && status !== 'Released') buttons.push(`<button class="btn danger" onclick="setPayrollStatus('${id}','Voided')">Void</button>`);
+  buttons.push(`<button class="btn secondary" onclick="duplicatePayrollRun('${id}')">Recompute</button>`);
+  return buttons.join(' ');
+}
+
+async function setPayrollStatus(runId, status) {
+  const run = state.payrollRuns.find(r => r.id === runId);
+  if (!run) return toast('Payroll run not found.');
+  if (status === 'Voided' && !confirm('Void this payroll run? It will remain for audit trail but should not be used for release.')) return;
+  const map = getPayrollWorkflowMap(true);
+  const now = new Date().toISOString();
+  const prev = map[runId] || { payroll_run_id: runId, company_id: company.id };
+  const payload = { ...prev, payroll_run_id: runId, company_id: company.id, status, updated_by: session.user.id, updated_at: now };
+  if (status === 'For Review') { payload.reviewed_by = session.user.id; payload.reviewed_at = now; }
+  if (status === 'Approved') { payload.approved_by = session.user.id; payload.approved_at = now; }
+  if (status === 'Released') { payload.released_by = session.user.id; payload.released_at = now; }
+  if (status === 'Voided') { payload.voided_by = session.user.id; payload.voided_at = now; }
+  map[runId] = payload;
+  state.payrollWorkflow = map;
+  localStorage.setItem(`e4u_payroll_workflow_${company.id}`, JSON.stringify(map));
+  try { await supabaseClient.from('payroll_workflow').upsert(payload, { onConflict: 'payroll_run_id' }); } catch (error) { console.warn('Payroll workflow table fallback:', error.message || error); }
+  try { await supabaseClient.from('payroll_runs').update({ status }).eq('id', runId); } catch (error) { console.warn('Payroll runs status column fallback:', error.message || error); }
+  await addAuditLog('PAYROLL_STATUS_CHANGE', 'payroll', runId, { period_label: run.period_label, status });
+  toast(`Payroll marked as ${status}.`);
+  await loadAllData();
+}
+
+function duplicatePayrollRun(runId) {
+  const run = state.payrollRuns.find(r => r.id === runId);
+  if (!run) return toast('Payroll run not found.');
+  setView('payroll');
+  setTimeout(() => {
+    document.getElementById('payPeriodLabel').value = `${run.period_label} - Recomputed ${new Date().toLocaleDateString('en-PH')}`;
+    document.getElementById('payStart').value = run.period_start;
+    document.getElementById('payEnd').value = run.period_end;
+    document.getElementById('payDate').value = new Date().toISOString().slice(0,10);
+    toast('Ready to recompute. Review details then click Compute & Save Payroll.');
+  }, 100);
 }
 
 function defaultSettings() {
@@ -732,15 +872,15 @@ function renderPayroll() {
         <p class="small">Mode: <strong>${payrollModeLabel(options.payroll_mode)}</strong> • Auto tax: <strong>${options.auto_tax === 'true' ? 'Enabled' : 'Off'}</strong></p>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.5</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments.</p></div>
+      <div class="card"><h3>Payroll Rules v2.6</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6 adds workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
     </div>
-    <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">Local per-employee adjustments for this browser. Use for demo or quick client testing; production should store these in Supabase tables.</p>
+    <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">v2.6 supports Supabase-backed adjustments when the SQL add-on is installed; otherwise this browser uses safe local fallback for demo/testing.</p>
       ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
-      ${state.payrollRuns.length ? `<div class="table-wrap"><table><thead><tr><th>Period</th><th>Date</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Action</th></tr></thead><tbody>${state.payrollRuns.map(r => `<tr>
-        <td>${escapeHtml(r.period_label)}</td><td>${formatDate(r.pay_date)}</td><td>${money(r.total_gross_pay)}</td><td>${money(r.total_deductions)}</td><td><strong>${money(r.total_net_pay)}</strong></td><td><button class="btn secondary" onclick="viewPayrollRun('${r.id}')">View</button></td>
+      ${state.payrollRuns.length ? `<div class="table-wrap"><table><thead><tr><th>Period</th><th>Status</th><th>Date</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Workflow</th></tr></thead><tbody>${state.payrollRuns.map(r => `<tr>
+        <td>${escapeHtml(r.period_label)}</td><td>${payrollStatusBadge(r)}</td><td>${formatDate(r.pay_date)}</td><td>${money(r.total_gross_pay)}</td><td>${money(r.total_deductions)}</td><td><strong>${money(r.total_net_pay)}</strong></td><td class="actions">${payrollWorkflowButtons(r)}</td>
       </tr>`).join('')}</tbody></table></div>` : empty('No payroll run yet.')}
     </div>`;
 }
@@ -762,9 +902,11 @@ function openPayrollAdjustmentForm(employeeId) {
     </div>
     <div class="form-actions"><button class="btn primary" onclick="savePayrollAdjustment('${employeeId}')">Save Adjustment</button></div>`);
 }
-function savePayrollAdjustment(employeeId) {
+async function savePayrollAdjustment(employeeId) {
   const all = getPayrollAdjustments();
-  all[employeeId] = {
+  const payload = {
+    company_id: company.id,
+    employee_id: employeeId,
     rice_allowance: Number(document.getElementById('adjRice').value || 0),
     transport_allowance: Number(document.getElementById('adjTransport').value || 0),
     meal_allowance: Number(document.getElementById('adjMeal').value || 0),
@@ -774,16 +916,25 @@ function savePayrollAdjustment(employeeId) {
     sss_loan: Number(document.getElementById('adjSssLoan').value || 0),
     pagibig_loan: Number(document.getElementById('adjPagibigLoan').value || 0),
     company_loan: Number(document.getElementById('adjCompanyLoan').value || 0),
-    other_deduction: Number(document.getElementById('adjOtherDed').value || 0)
+    other_deduction: Number(document.getElementById('adjOtherDed').value || 0),
+    updated_by: session.user.id,
+    updated_at: new Date().toISOString()
   };
+  all[employeeId] = payload;
   savePayrollAdjustments(all);
+  state.payrollAdjustments = all;
+  try { await supabaseClient.from('payroll_adjustments').upsert(payload, { onConflict: 'company_id,employee_id' }); } catch (error) { console.warn('Payroll adjustments table fallback:', error.message || error); }
+  await addAuditLog('PAYROLL_ADJUSTMENT_SAVE', 'payroll_adjustments', employeeId, payload);
   closeModal(); toast('Payroll adjustment saved.'); renderPayroll();
 }
-function clearPayrollAdjustment(employeeId) {
+async function clearPayrollAdjustment(employeeId) {
   if (!confirm('Clear adjustments for this employee?')) return;
   const all = getPayrollAdjustments();
   delete all[employeeId];
   savePayrollAdjustments(all);
+  state.payrollAdjustments = all;
+  try { await supabaseClient.from('payroll_adjustments').delete().eq('company_id', company.id).eq('employee_id', employeeId); } catch (error) { console.warn('Payroll adjustments table fallback:', error.message || error); }
+  await addAuditLog('PAYROLL_ADJUSTMENT_CLEAR', 'payroll_adjustments', employeeId, {});
   toast('Payroll adjustment cleared.'); renderPayroll();
 }
 async function processPayroll() {
@@ -809,6 +960,7 @@ async function processPayroll() {
     }).select().single(), 'Cannot create payroll run');
     const rows = items.map(i => ({ ...i, company_id: company.id, payroll_run_id: run.id }));
     if (rows.length) await sb(supabaseClient.from('payroll_items').insert(rows), 'Cannot save payroll items');
+    await addAuditLog('PAYROLL_RUN_CREATED', 'payroll', run.id, { period_label: periodLabel, gross: totals.gross, deductions: totals.deductions, net: totals.net });
     toast('Payroll run saved.'); await loadAllData(); activeView = 'payroll';
   } catch (error) { toast(error.message); }
 }
@@ -906,17 +1058,19 @@ function adjustmentDefaults() {
     other_deduction: 0
   };
 }
-function getPayrollAdjustments() {
+function getPayrollAdjustments(fromStorageOnly = false) {
   if (!company?.id) return {};
+  if (!fromStorageOnly && state.payrollAdjustments && Object.keys(state.payrollAdjustments).length) return state.payrollAdjustments;
   try {
     return JSON.parse(localStorage.getItem(`e4u_payroll_adjustments_${company.id}`) || '{}');
   } catch (_) {
     return {};
   }
 }
-function savePayrollAdjustments(adjustments) {
+function savePayrollAdjustments(adjustments, skipState = false) {
   if (!company?.id) return;
   localStorage.setItem(`e4u_payroll_adjustments_${company.id}`, JSON.stringify(adjustments));
+  if (!skipState) state.payrollAdjustments = adjustments;
 }
 function getAdjustment(employeeId) {
   const all = getPayrollAdjustments();
@@ -1022,7 +1176,7 @@ function viewPayrollRun(id) {
     <div class="card"><h3>Employer Share</h3><p>SSS ER: ${money(totals.sss_er)}<br>EC: ${money(totals.ec)}<br>PhilHealth ER: ${money(totals.philhealth_er)}<br>Pag-IBIG ER: ${money(totals.pagibig_er)}</p></div>
     <div class="card"><h3>Total Remittance Estimate</h3><p>SSS+EC: ${money(totals.sss + totals.sss_er + totals.ec)}<br>PhilHealth: ${money(totals.philhealth + totals.philhealth_er)}<br>Pag-IBIG: ${money(totals.pagibig + totals.pagibig_er)}</p></div>
   </div>`;
-  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>Gross</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Tax</th><th>Cash/Loans</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}${Number(i.days_worked || 0) === 0 ? '<div class="small">No paid DTR in period</div>' : ''}</td><td>${i.days_worked}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.withholding_tax)}</td><td>${money(i.cash_advance)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+  modal(`Payroll: ${run.period_label} • ${payrollStatus(run)}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>Gross</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Tax</th><th>Cash/Loans</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}${Number(i.days_worked || 0) === 0 ? '<div class="small">No paid DTR in period</div>' : ''}</td><td>${i.days_worked}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.withholding_tax)}</td><td>${money(i.cash_advance)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
 function renderPayslips() {
@@ -1059,7 +1213,7 @@ function renderCOE() {
   const defaultSignatory = state.settings?.payroll_officer || company.contact_person || profile?.full_name || '';
   document.getElementById('coeView').innerHTML = `
     <div class="grid two">
-      <div class="card"><h3>Certificate of Employment Generator v2.5</h3>
+      <div class="card"><h3>Certificate of Employment Generator v2.6</h3>
         <p>Generate COE without compensation, with compensation, for loan, visa/travel, or employment requirement.</p>
         <div class="form-grid">
           <label>Employee<select id="coeEmployee" onchange="updateCOEPreview()">${options}</select></label>
@@ -1151,6 +1305,10 @@ function renderReports() {
       <div class="card"><h3>13th Month Estimate</h3><p>Basic pay totals divided by 12 from loaded payroll runs.</p><button class="btn primary" onclick="export13thMonthCSV()">Download CSV</button></div>
       <div class="card"><h3>Tax & Loan Summary</h3><p>Withholding tax, cash advances, loans and other deductions.</p><button class="btn primary" onclick="exportTaxLoanSummaryCSV()">Download CSV</button></div>
       <div class="card"><h3>Bank Payroll Upload</h3><p>Employee net pay listing for bank upload preparation.</p><button class="btn primary" onclick="exportBankUploadCSV()">Download CSV</button></div>
+      <div class="card"><h3>Payroll Approval Register</h3><p>Draft, review, approval, released, and voided payroll runs.</p><button class="btn primary" onclick="exportApprovalRegisterCSV()">Download CSV</button></div>
+      <div class="card"><h3>Payroll Adjustments</h3><p>Allowances, cash advances, loans, and other deductions.</p><button class="btn primary" onclick="exportPayrollAdjustmentsCSV()">Download CSV</button></div>
+      <div class="card"><h3>Audit Trail</h3><p>Recent user actions and payroll workflow activity.</p><button class="btn primary" onclick="exportAuditTrailCSV()">Download CSV</button></div>
+      <div class="card"><h3>Loan Balance Starter</h3><p>Template-style export for loan ledgers and balances.</p><button class="btn primary" onclick="exportLoanBalanceCSV()">Download CSV</button></div>
       <div class="card"><h3>Payroll Items</h3><p>Export raw payroll details.</p><button class="btn primary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
       <div class="card"><h3>Full Backup</h3><p>Download JSON backup from Supabase-loaded data.</p><button class="btn secondary" onclick="exportBackupJSON()">Backup JSON</button></div>
     </div>`;
@@ -1228,11 +1386,87 @@ function exportBankUploadCSV() {
   downloadFile(`bank_payroll_upload_${Date.now()}.csv`, toCSV(rows), 'text/csv');
 }
 
+
+function exportApprovalRegisterCSV() {
+  const rows = state.payrollRuns.map(r => {
+    const wf = getPayrollWorkflow(r.id);
+    return {
+      period_label: r.period_label,
+      period_start: r.period_start,
+      period_end: r.period_end,
+      pay_date: r.pay_date,
+      status: payrollStatus(r),
+      total_gross_pay: r.total_gross_pay,
+      total_deductions: r.total_deductions,
+      total_net_pay: r.total_net_pay,
+      reviewed_at: wf.reviewed_at || '',
+      approved_at: wf.approved_at || '',
+      released_at: wf.released_at || '',
+      voided_at: wf.voided_at || ''
+    };
+  });
+  if (!rows.length) return toast('No payroll runs to export.');
+  downloadFile(`payroll_approval_register_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+
+function exportPayrollAdjustmentsCSV() {
+  const all = getPayrollAdjustments();
+  const rows = Object.entries(all).map(([employeeId, a]) => ({
+    employee_no: (getEmployee(employeeId) || {}).employee_no || '',
+    employee: getEmployeeName(employeeId),
+    rice_allowance: a.rice_allowance || 0,
+    transport_allowance: a.transport_allowance || 0,
+    meal_allowance: a.meal_allowance || 0,
+    communication_allowance: a.communication_allowance || 0,
+    other_allowance: a.other_allowance || 0,
+    total_allowances: totalAllowance(a),
+    cash_advance: a.cash_advance || 0,
+    sss_loan: a.sss_loan || 0,
+    pagibig_loan: a.pagibig_loan || 0,
+    company_loan: a.company_loan || 0,
+    other_deduction: a.other_deduction || 0,
+    total_loans_deductions: totalLoanDeduction(a)
+  }));
+  if (!rows.length) return toast('No payroll adjustments to export.');
+  downloadFile(`payroll_adjustments_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+
+function exportAuditTrailCSV() {
+  const rows = (state.auditLogs || getLocalAuditLogs()).map(a => ({
+    created_at: a.created_at,
+    user_email: a.user_email || '',
+    action: a.action,
+    module: a.module,
+    record_id: a.record_id || '',
+    details: JSON.stringify(a.details || {})
+  }));
+  if (!rows.length) return toast('No audit logs to export.');
+  downloadFile(`audit_trail_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+
+function exportLoanBalanceCSV() {
+  const all = getPayrollAdjustments();
+  const rows = Object.entries(all).map(([employeeId, a]) => ({
+    employee_no: (getEmployee(employeeId) || {}).employee_no || '',
+    employee: getEmployeeName(employeeId),
+    sss_loan_deduction: a.sss_loan || 0,
+    pagibig_loan_deduction: a.pagibig_loan || 0,
+    company_loan_deduction: a.company_loan || 0,
+    cash_advance_deduction: a.cash_advance || 0,
+    other_deduction: a.other_deduction || 0,
+    beginning_balance: '',
+    current_deduction: totalLoanDeduction(a),
+    remaining_balance: ''
+  }));
+  if (!rows.length) return toast('No loan/adjustment records to export.');
+  downloadFile(`loan_balance_starter_${Date.now()}.csv`, toCSV(rows), 'text/csv');
+}
+
 function renderSettings() {
   const s = state.settings || defaultSettings();
   const local = getPayrollLocalOptions();
   document.getElementById('settingsView').innerHTML = `
-    <div class="card"><h3>Payroll Settings v2.5</h3>
+    <div class="card"><h3>Payroll Settings v2.6</h3>
       <div class="form-grid">
         ${input('Standard Working Days / Month', 'setDays', s.standard_days, 'number', '', 'step="0.01"')}
         ${input('Grace Minutes', 'setGrace', s.grace_minutes, 'number')}
@@ -1242,7 +1476,7 @@ function renderSettings() {
         ${selectInput('Auto Withholding Tax Estimate', 'setAutoTax', [['false','Off'],['true','On']], local.auto_tax)}
         ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '', 'text', 'full-span')}
       </div>
-      <p class="small">Tax is an estimate for payroll preview only. Validate actual withholding against BIR rules before filing.</p>
+      <p class="small">Tax is an estimate for payroll preview only. Validate actual withholding against BIR rules before filing. v2.6 can use Supabase add-on tables for approvals, adjustments, and audit trail; otherwise local fallback is used.</p>
       <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
     </div>`;
 }
