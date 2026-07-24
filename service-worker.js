@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e4u-hr-payroll-v2-2';
+const CACHE_NAME = 'e4u-hr-payroll-v2-3';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './assets/icon.svg'];
 
 self.addEventListener('install', event => {

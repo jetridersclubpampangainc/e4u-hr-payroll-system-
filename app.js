@@ -718,7 +718,7 @@ function renderPayroll() {
         </div>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Government deductions now auto-compute SSS, PhilHealth, and Pag-IBIG employee shares from monthly salary basis.</p></div>
+      <div class="card"><h3>Payroll Rules v2.3</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Employee deductions auto-compute SSS, PhilHealth, and Pag-IBIG. Employer shares, EC, government report, payroll summary, and 13th month reports are available under Reports.</p></div>
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
@@ -779,6 +779,38 @@ function computePagibigEmployeeShare(monthlySalary) {
   const cap = Number(state.settings?.default_pagibig || 200);
   return roundMoney(Math.min(cap, salary * 0.02));
 }
+function getSSSMSC(monthlySalary) {
+  const salary = Number(monthlySalary || 0);
+  if (salary <= 0) return 0;
+  const minMSC = 5000;
+  const maxMSC = 35000;
+  const roundedMSC = Math.round(salary / 500) * 500;
+  return Math.min(maxMSC, Math.max(minMSC, roundedMSC));
+}
+function computeSSSEmployerShare(monthlySalary) {
+  return roundMoney(getSSSMSC(monthlySalary) * 0.10);
+}
+function computeECContribution(monthlySalary) {
+  const msc = getSSSMSC(monthlySalary);
+  if (msc <= 0) return 0;
+  return msc < 15000 ? 10 : 30;
+}
+function computePhilHealthEmployerShare(monthlySalary) {
+  return computePhilHealthEmployeeShare(monthlySalary);
+}
+function computePagibigEmployerShare(monthlySalary) {
+  return computePagibigEmployeeShare(monthlySalary);
+}
+function getPayrollEmployerShares(item) {
+  const emp = getEmployee(item.employee_id) || {};
+  const monthlyBasis = getMonthlySalaryBasis(emp);
+  return {
+    sss_er: computeSSSEmployerShare(monthlyBasis),
+    ec: computeECContribution(monthlyBasis),
+    philhealth_er: computePhilHealthEmployerShare(monthlyBasis),
+    pagibig_er: computePagibigEmployerShare(monthlyBasis)
+  };
+}
 function computePayrollItem(e, start, end) {
   const records = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end && a.status !== 'Absent');
   const daysWorked = new Set(records.map(r => r.attendance_date)).size;
@@ -809,7 +841,18 @@ function computePayrollItem(e, start, end) {
 function viewPayrollRun(id) {
   const run = state.payrollRuns.find(r => r.id === id);
   const items = state.payrollItems.filter(i => i.payroll_run_id === id);
-  modal(`Payroll: ${run.period_label}`, `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+  const totals = items.reduce((acc, i) => {
+    const er = getPayrollEmployerShares(i);
+    acc.sss += Number(i.sss || 0); acc.philhealth += Number(i.philhealth || 0); acc.pagibig += Number(i.pagibig || 0);
+    acc.sss_er += er.sss_er; acc.ec += er.ec; acc.philhealth_er += er.philhealth_er; acc.pagibig_er += er.pagibig_er;
+    return acc;
+  }, { sss: 0, philhealth: 0, pagibig: 0, sss_er: 0, ec: 0, philhealth_er: 0, pagibig_er: 0 });
+  const govSummary = `<div class="grid three" style="margin-bottom:14px;">
+    <div class="card"><h3>Employee Deductions</h3><p>SSS: ${money(totals.sss)}<br>PhilHealth: ${money(totals.philhealth)}<br>Pag-IBIG: ${money(totals.pagibig)}</p></div>
+    <div class="card"><h3>Employer Share</h3><p>SSS ER: ${money(totals.sss_er)}<br>EC: ${money(totals.ec)}<br>PhilHealth ER: ${money(totals.philhealth_er)}<br>Pag-IBIG ER: ${money(totals.pagibig_er)}</p></div>
+    <div class="card"><h3>Total Remittance Estimate</h3><p>SSS+EC: ${money(totals.sss + totals.sss_er + totals.ec)}<br>PhilHealth: ${money(totals.philhealth + totals.philhealth_er)}<br>Pag-IBIG: ${money(totals.pagibig + totals.pagibig_er)}</p></div>
+  </div>`;
+  modal(`Payroll: ${run.period_label}`, `${govSummary}<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS EE</th><th>PhilHealth EE</th><th>Pag-IBIG EE</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
 function renderPayslips() {
@@ -845,10 +888,11 @@ function renderCOE() {
   const defaultSignatory = state.settings?.payroll_officer || company.contact_person || profile?.full_name || '';
   document.getElementById('coeView').innerHTML = `
     <div class="grid two">
-      <div class="card"><h3>Certificate of Employment Generator</h3>
-        <p>Generate a clean COE using the company profile and employee masterfile.</p>
+      <div class="card"><h3>Certificate of Employment Generator v2.3</h3>
+        <p>Generate COE without compensation, with compensation, for loan, visa/travel, or employment requirement.</p>
         <div class="form-grid">
           <label>Employee<select id="coeEmployee" onchange="updateCOEPreview()">${options}</select></label>
+          <label>COE Type<select id="coeType" onchange="updateCOEPreview()"><option value="without_comp">Without Compensation</option><option value="with_comp">With Compensation</option><option value="loan">For Loan / Bank Requirement</option><option value="visa">For Visa / Travel</option><option value="employment">For Employment Requirement</option></select></label>
           ${input('Date Issued', 'coeDate', today, 'date')}
           ${input('Purpose', 'coePurpose', 'employment requirement')}
           ${input('Place Issued', 'coePlace', company.address || '')}
@@ -860,10 +904,10 @@ function renderCOE() {
           <button class="btn primary" onclick="printCOE()">Print COE</button>
         </div>
       </div>
-      <div class="card"><h3>COE Notes</h3><p>Before printing, confirm the employee position, department, date hired, and company address in Employee Masterfile and Company Profile.</p></div>
+      <div class="card"><h3>COE Notes</h3><p>For COE with compensation/loan, the system uses the employee's Basic Salary from Employee Masterfile. Confirm salary, position, department, and date hired before printing.</p></div>
     </div>
     <div class="card" style="margin-top:18px;">
-      <div id="coePreview">${selected ? coeHtml(selected, today, 'employment requirement', company.address || '', defaultSignatory, 'Authorized Representative') : empty('No employees available for COE.')}</div>
+      <div id="coePreview">${selected ? coeHtml(selected, today, 'employment requirement', company.address || '', defaultSignatory, 'Authorized Representative', 'without_comp') : empty('No employees available for COE.')}</div>
     </div>`;
 }
 function updateCOEPreview() {
@@ -875,9 +919,10 @@ function updateCOEPreview() {
   const placeIssued = document.getElementById('coePlace')?.value.trim() || company.address || '';
   const signatory = document.getElementById('coeSignatory')?.value.trim() || company.contact_person || profile?.full_name || '';
   const signatoryPosition = document.getElementById('coeSignatoryPosition')?.value.trim() || 'Authorized Representative';
-  el.innerHTML = employeeId ? coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition) : empty('Select an employee.');
+  const coeType = document.getElementById('coeType')?.value || 'without_comp';
+  el.innerHTML = employeeId ? coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition, coeType) : empty('Select an employee.');
 }
-function coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition) {
+function coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signatoryPosition, coeType = 'without_comp') {
   const emp = getEmployee(employeeId) || {};
   const fullName = getEmployeeFullName(emp) || getEmployeeName(employeeId);
   const position = emp.position || 'Employee';
@@ -886,6 +931,12 @@ function coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signat
   const statusText = emp.status === 'Active' ? 'is currently employed' : `has employment status: ${emp.status || 'on record'}`;
   const issued = formatDate(dateIssued);
   const place = placeIssued || company.address || '';
+  const monthly = getMonthlySalaryBasis(emp);
+  const compLine = (coeType === 'with_comp' || coeType === 'loan') && monthly > 0
+    ? `<p>Based on company records, the employee's current basic monthly compensation is <strong>${money(monthly)}</strong>. This amount is stated for certification purposes only and is subject to applicable payroll records and company policies.</p>`
+    : '';
+  const purposeMap = { without_comp: purpose, with_comp: purpose || 'employment and compensation verification', loan: 'loan / bank requirement', visa: 'visa / travel requirement', employment: 'employment requirement' };
+  const finalPurpose = purposeMap[coeType] || purpose;
   return `<div class="coe-document">
     <div class="coe-company">
       <h2>${escapeHtml(company.name || 'Company Name')}</h2>
@@ -895,7 +946,8 @@ function coeHtml(employeeId, dateIssued, purpose, placeIssued, signatory, signat
     <h1>CERTIFICATE OF EMPLOYMENT</h1>
     <p>To Whom It May Concern:</p>
     <p>This is to certify that <strong>${escapeHtml(fullName)}</strong> ${statusText} with <strong>${escapeHtml(company.name || 'the company')}</strong> as <strong>${escapeHtml(position)}</strong>${department ? ` under the ${escapeHtml(department)} department` : ''}. Based on company records, the employee's date hired is <strong>${escapeHtml(dateHired)}</strong>.</p>
-    <p>This certification is issued upon the request of the above-mentioned employee for <strong>${escapeHtml(purpose)}</strong> and for whatever legal purpose it may serve.</p>
+    ${compLine}
+    <p>This certification is issued upon the request of the above-mentioned employee for <strong>${escapeHtml(finalPurpose)}</strong> and for whatever legal purpose it may serve.</p>
     <p>Issued this <strong>${escapeHtml(issued)}</strong>${place ? ` at <strong>${escapeHtml(place)}</strong>` : ''}.</p>
     <div class="coe-signature">
       <strong>${escapeHtml(signatory || 'Authorized Signatory')}</strong>
@@ -923,9 +975,64 @@ function renderReports() {
       <div class="card"><h3>Employee List</h3><p>Export employee masterfile.</p><button class="btn primary" onclick="exportEmployeesCSV()">Download CSV</button></div>
       <div class="card"><h3>Attendance</h3><p>Export DTR records.</p><button class="btn primary" onclick="exportCSV('attendance_records')">Download CSV</button></div>
       <div class="card"><h3>Leave Requests</h3><p>Export leave monitoring.</p><button class="btn primary" onclick="exportCSV('leave_requests')">Download CSV</button></div>
-      <div class="card"><h3>Payroll Items</h3><p>Export payroll details.</p><button class="btn primary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
+      <div class="card"><h3>Payroll Summary</h3><p>Gross, deductions, and net pay by payroll run.</p><button class="btn primary" onclick="exportPayrollSummaryCSV()">Download CSV</button></div>
+      <div class="card"><h3>Government Contributions</h3><p>SSS, PhilHealth, Pag-IBIG employee/employer report.</p><button class="btn primary" onclick="exportGovernmentContributionsCSV()">Download CSV</button></div>
+      <div class="card"><h3>13th Month Estimate</h3><p>Basic pay totals divided by 12 from loaded payroll runs.</p><button class="btn primary" onclick="export13thMonthCSV()">Download CSV</button></div>
+      <div class="card"><h3>Payroll Items</h3><p>Export raw payroll details.</p><button class="btn secondary" onclick="exportCSV('payroll_items')">Download CSV</button></div>
       <div class="card"><h3>Full Backup</h3><p>Download JSON backup from Supabase-loaded data.</p><button class="btn secondary" onclick="exportBackupJSON()">Backup JSON</button></div>
     </div>`;
+}
+function exportPayrollSummaryCSV() {
+  if (!state.payrollRuns.length) return toast('No payroll runs to export.');
+  const rows = state.payrollRuns.map(r => ({
+    period_label: r.period_label,
+    period_start: r.period_start,
+    period_end: r.period_end,
+    pay_date: r.pay_date,
+    total_gross_pay: r.total_gross_pay,
+    total_deductions: r.total_deductions,
+    total_net_pay: r.total_net_pay
+  }));
+  downloadFile('payroll_summary.csv', toCSV(rows), 'text/csv');
+}
+function exportGovernmentContributionsCSV() {
+  if (!state.payrollItems.length) return toast('No payroll items to export.');
+  const rows = state.payrollItems.map(i => {
+    const emp = getEmployee(i.employee_id) || {};
+    const run = state.payrollRuns.find(r => r.id === i.payroll_run_id) || {};
+    const er = getPayrollEmployerShares(i);
+    return {
+      period: run.period_label || '',
+      employee_no: emp.employee_no || '',
+      employee_name: getEmployeeName(i.employee_id),
+      monthly_salary_basis: getMonthlySalaryBasis(emp),
+      sss_employee: i.sss || 0,
+      sss_employer: er.sss_er,
+      ec: er.ec,
+      sss_total_remittance: roundMoney(Number(i.sss || 0) + er.sss_er + er.ec),
+      philhealth_employee: i.philhealth || 0,
+      philhealth_employer: er.philhealth_er,
+      philhealth_total_remittance: roundMoney(Number(i.philhealth || 0) + er.philhealth_er),
+      pagibig_employee: i.pagibig || 0,
+      pagibig_employer: er.pagibig_er,
+      pagibig_total_remittance: roundMoney(Number(i.pagibig || 0) + er.pagibig_er)
+    };
+  });
+  downloadFile('government_contributions_summary.csv', toCSV(rows), 'text/csv');
+}
+function export13thMonthCSV() {
+  if (!state.payrollItems.length) return toast('No payroll items to export.');
+  const grouped = {};
+  state.payrollItems.forEach(i => {
+    if (!grouped[i.employee_id]) grouped[i.employee_id] = { employee_name: getEmployeeName(i.employee_id), total_basic_pay: 0 };
+    grouped[i.employee_id].total_basic_pay += Number(i.basic_pay || 0);
+  });
+  const rows = Object.values(grouped).map(r => ({
+    employee_name: r.employee_name,
+    total_basic_pay: roundMoney(r.total_basic_pay),
+    estimated_13th_month: roundMoney(r.total_basic_pay / 12)
+  }));
+  downloadFile('13th_month_estimate.csv', toCSV(rows), 'text/csv');
 }
 function renderSettings() {
   const s = state.settings || defaultSettings();
@@ -939,6 +1046,7 @@ function renderSettings() {
         ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '')}
       </div>
       <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
+      <p class="small">v2.3: SSS, PhilHealth, and Pag-IBIG employee deductions auto-compute during new payroll runs. Employer share and 13th month reports are available under Reports.</p>
     </div>`;
 }
 async function saveSettings() {
