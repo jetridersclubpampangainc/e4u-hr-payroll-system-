@@ -718,7 +718,7 @@ function renderPayroll() {
         </div>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent.</p></div>
+      <div class="card"><h3>Payroll Rules</h3><p>Basic pay uses attendance days. OT uses hourly rate × multiplier. Late/undertime use hourly equivalent. Government deductions now auto-compute SSS, PhilHealth, and Pag-IBIG employee shares from monthly salary basis.</p></div>
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
@@ -746,6 +746,39 @@ async function processPayroll() {
     toast('Payroll run saved.'); await loadAllData(); activeView = 'payroll';
   } catch (error) { toast(error.message); }
 }
+function roundMoney(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+function getMonthlySalaryBasis(e) {
+  const monthly = Number(e.basic_salary || 0);
+  if (monthly > 0) return monthly;
+  const daily = Number(e.daily_rate || 0);
+  const standardDays = Number(state.settings?.standard_days || 26);
+  return daily > 0 ? daily * standardDays : 0;
+}
+function computeSSSEmployeeShare(monthlySalary) {
+  const salary = Number(monthlySalary || 0);
+  if (salary <= 0) return 0;
+  const minMSC = 5000;
+  const maxMSC = 35000;
+  const roundedMSC = Math.round(salary / 500) * 500;
+  const msc = Math.min(maxMSC, Math.max(minMSC, roundedMSC));
+  return roundMoney(msc * 0.05);
+}
+function computePhilHealthEmployeeShare(monthlySalary) {
+  const salary = Number(monthlySalary || 0);
+  if (salary <= 0) return 0;
+  const floor = 10000;
+  const ceiling = 100000;
+  const basis = Math.min(ceiling, Math.max(floor, salary));
+  return roundMoney(basis * 0.025);
+}
+function computePagibigEmployeeShare(monthlySalary) {
+  const salary = Number(monthlySalary || 0);
+  if (salary <= 0) return 0;
+  const cap = Number(state.settings?.default_pagibig || 200);
+  return roundMoney(Math.min(cap, salary * 0.02));
+}
 function computePayrollItem(e, start, end) {
   const records = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end && a.status !== 'Absent');
   const daysWorked = new Set(records.map(r => r.attendance_date)).size;
@@ -754,18 +787,19 @@ function computePayrollItem(e, start, end) {
   const undertimeMins = records.reduce((sum, r) => sum + Number(r.undertime_minutes || 0), 0);
   const daily = Number(e.daily_rate || (Number(e.basic_salary || 0) / Number(state.settings?.standard_days || 26)));
   const hourly = Number(e.hourly_rate || daily / 8);
-  const basicPay = daysWorked * daily;
-  const otPay = otHours * hourly * Number(state.settings?.overtime_multiplier || 1.25);
-  const lateDeduction = lateMins / 60 * hourly;
-  const undertimeDeduction = undertimeMins / 60 * hourly;
-  const sss = 0;
-  const philhealth = 0;
-  const pagibig = Number(state.settings?.default_pagibig || 200);
+  const basicPay = roundMoney(daysWorked * daily);
+  const otPay = roundMoney(otHours * hourly * Number(state.settings?.overtime_multiplier || 1.25));
+  const lateDeduction = roundMoney(lateMins / 60 * hourly);
+  const undertimeDeduction = roundMoney(undertimeMins / 60 * hourly);
+  const monthlyBasis = getMonthlySalaryBasis(e);
+  const sss = computeSSSEmployeeShare(monthlyBasis);
+  const philhealth = computePhilHealthEmployeeShare(monthlyBasis);
+  const pagibig = computePagibigEmployeeShare(monthlyBasis);
   const withholdingTax = 0;
   const cashAdvance = 0;
-  const gross = basicPay + otPay;
-  const totalDeductions = lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance;
-  const net = Math.max(0, gross - totalDeductions);
+  const gross = roundMoney(basicPay + otPay);
+  const totalDeductions = roundMoney(lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance);
+  const net = roundMoney(Math.max(0, gross - totalDeductions));
   return {
     employee_id: e.id, days_worked: daysWorked, overtime_hours: otHours, late_minutes: lateMins, undertime_minutes: undertimeMins,
     basic_pay: basicPay, overtime_pay: otPay, gross_pay: gross, late_deduction: lateDeduction, undertime_deduction: undertimeDeduction,
@@ -775,7 +809,7 @@ function computePayrollItem(e, start, end) {
 function viewPayrollRun(id) {
   const run = state.payrollRuns.find(r => r.id === id);
   const items = state.payrollItems.filter(i => i.payroll_run_id === id);
-  modal(`Payroll: ${run.period_label}`, `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
+  modal(`Payroll: ${run.period_label}`, `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>OT</th><th>Gross</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Deductions</th><th>Net Pay</th></tr></thead><tbody>${items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${Number(i.overtime_hours).toFixed(2)}</td><td>${money(i.gross_pay)}</td><td>${money(i.sss)}</td><td>${money(i.philhealth)}</td><td>${money(i.pagibig)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
 function renderPayslips() {
@@ -798,7 +832,7 @@ function payslipHtml(runId) {
     return `<div class="payslip">
       <div class="payslip-head"><div><h3>${escapeHtml(company.name)}</h3><p>${escapeHtml(company.address || '')}</p></div><div><strong>PAYSLIP</strong><p>${escapeHtml(run.period_label)}</p></div></div>
       <div class="grid two"><div><p><strong>${escapeHtml(getEmployeeName(i.employee_id))}</strong><br>${escapeHtml(emp.position || '')} • ${escapeHtml(emp.department || '')}</p><p>Pay Date: ${formatDate(run.pay_date)}</p></div>
-      <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime</span><strong>${money(i.undertime_deduction)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
+      <div class="kv"><span>Basic Pay</span><strong>${money(i.basic_pay)}</strong><span>Overtime Pay</span><strong>${money(i.overtime_pay)}</strong><span>Gross Pay</span><strong>${money(i.gross_pay)}</strong><span>Late Deduction</span><strong>${money(i.late_deduction)}</strong><span>Undertime</span><strong>${money(i.undertime_deduction)}</strong><span>SSS</span><strong>${money(i.sss)}</strong><span>PhilHealth</span><strong>${money(i.philhealth)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.total_deductions)}</strong><span>NET PAY</span><strong>${money(i.net_pay)}</strong></div></div>
     </div>`;
   }).join('') || empty('No payslip items found.');
 }
@@ -901,7 +935,7 @@ function renderSettings() {
         ${input('Standard Working Days / Month', 'setDays', s.standard_days, 'number', '', 'step="0.01"')}
         ${input('Grace Minutes', 'setGrace', s.grace_minutes, 'number')}
         ${input('OT Multiplier', 'setOt', s.overtime_multiplier, 'number', '', 'step="0.01"')}
-        ${input('Default Pag-IBIG Deduction', 'setPagibig', s.default_pagibig, 'number', '', 'step="0.01"')}
+        ${input('Pag-IBIG Employee Share Cap / Default', 'setPagibig', s.default_pagibig, 'number', '', 'step="0.01"')}
         ${input('Payroll Officer', 'setOfficer', s.payroll_officer || '')}
       </div>
       <div class="form-actions"><button class="btn primary" onclick="saveSettings()">Save Settings</button></div>
