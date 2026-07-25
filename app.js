@@ -10,6 +10,8 @@ const ROLE_LABELS = {
 const ADMIN_ROLES = ['super_admin', 'hr_admin', 'payroll_officer'];
 
 let supabaseClient = null;
+let authSubscription = null;
+let isLoggingOut = false;
 let session = null;
 let profile = null;
 let company = null;
@@ -137,13 +139,31 @@ async function handleAuthSubmit(event) {
   }
 }
 
-async function logout() {
-  await supabaseClient.auth.signOut();
+function showLoggedOutScreen() {
   session = null;
   profile = null;
   company = null;
-  document.getElementById('appShell').classList.add('hidden');
-  document.getElementById('authScreen').classList.remove('hidden');
+  const appShell = document.getElementById('appShell');
+  const authScreen = document.getElementById('authScreen');
+  if (appShell) appShell.classList.add('hidden');
+  if (authScreen) authScreen.classList.remove('hidden');
+}
+
+async function logout() {
+  if (isLoggingOut) {
+    showLoggedOutScreen();
+    return;
+  }
+  isLoggingOut = true;
+  try {
+    if (supabaseClient) await supabaseClient.auth.signOut();
+  } catch (error) {
+    console.warn('Logout warning:', error);
+  } finally {
+    showLoggedOutScreen();
+    isLoggingOut = false;
+    toast('Logged out.');
+  }
 }
 
 async function boot() {
@@ -162,10 +182,12 @@ async function boot() {
   document.getElementById('authScreen').classList.add('hidden');
   document.getElementById('appShell').classList.remove('hidden');
   await loadAllData();
-  supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
+  if (authSubscription?.unsubscribe) authSubscription.unsubscribe();
+  const { data: authListener } = supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
     session = nextSession;
-    if (!nextSession) logout();
+    if (!nextSession) showLoggedOutScreen();
   });
+  authSubscription = authListener?.subscription || null;
 }
 
 async function loadProfile() {
