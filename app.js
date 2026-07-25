@@ -878,7 +878,7 @@ async function saveLeave(id = '') {
 
 function renderPayroll() {
   const options = getPayrollLocalOptions();
-  const adjustmentRows = state.employees.filter(e => e.status === 'Active').map(e => {
+  const adjustmentRows = state.employees.filter(e => String(e.status || '').toLowerCase() === 'active').map(e => {
     const a = getAdjustment(e.id);
     return `<tr><td>${escapeHtml(getEmployeeName(e.id))}</td><td>${money(totalAllowance(a))}</td><td>${money(totalLoanDeduction(a))}</td><td class="actions"><button class="btn secondary" onclick="openPayrollAdjustmentForm('${e.id}')">Edit</button><button class="btn danger" onclick="clearPayrollAdjustment('${e.id}')">Clear</button></td></tr>`;
   }).join('');
@@ -890,11 +890,13 @@ function renderPayroll() {
           ${input('Pay Date', 'payDate', new Date().toISOString().slice(0,10), 'date')}
           ${input('Period Start', 'payStart', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10), 'date')}
           ${input('Period End', 'payEnd', new Date(new Date().getFullYear(), new Date().getMonth()+1, 0).toISOString().slice(0,10), 'date')}
+          ${selectInput('Payroll Mode', 'payPayrollMode', [['monthly_fixed','Monthly Fixed - use Basic Salary'],['attendance','Attendance-Based - requires DTR'],['daily','Daily Rate - requires DTR']], options.payroll_mode)}
+          ${selectInput('Auto Tax', 'payAutoTax', [['false','Off'],['true','On']], options.auto_tax)}
         </div>
-        <p class="small">Mode: <strong>${payrollModeLabel(options.payroll_mode)}</strong> • Auto tax: <strong>${options.auto_tax === 'true' ? 'Enabled' : 'Off'}</strong></p>
+        <p class="small"><strong>v2.6.3 salary guard:</strong> Monthly Fixed computes Basic Salary even if there is no DTR. Attendance-Based/Daily Rate computes zero when no DTR is encoded.</p>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.6.2</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6.2 adds safe zero-gross payroll guard, workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
+      <div class="card"><h3>Payroll Rules v2.6.3</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6.3 adds direct payroll-mode selection inside payroll processing, fixed salary computation guard, safe zero-gross payroll guard, workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
     </div>
     <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">v2.6 supports Supabase-backed adjustments when the SQL add-on is installed; otherwise this browser uses safe local fallback for demo/testing.</p>
       ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
@@ -965,14 +967,15 @@ async function processPayroll() {
     const end = document.getElementById('payEnd').value;
     const periodLabel = document.getElementById('payPeriodLabel').value.trim();
     const payDate = document.getElementById('payDate').value;
-    const options = getPayrollLocalOptions();
+    const options = getCurrentPayrollOptionsFromForm();
+    savePayrollLocalOptions(options);
     const duplicate = state.payrollRuns.find(r => r.period_start === start && r.period_end === end && r.period_label === periodLabel);
     if (duplicate && !confirm('Payroll run for this period/label already exists. Continue and create another run?')) return;
     if (options.payroll_mode !== 'monthly_fixed') {
       const hasAnyDTR = state.attendance.some(a => a.attendance_date >= start && a.attendance_date <= end);
       if (!hasAnyDTR && !confirm('No DTR found in this period. This will compute zero pay for attendance/daily mode. Continue?')) return;
     }
-    const items = state.employees.filter(e => e.status === 'Active').map(e => computePayrollItem(e, start, end));
+    const items = state.employees.filter(e => String(e.status || '').toLowerCase() === 'active').map(e => computePayrollItem(e, start, end, options));
     const totals = items.reduce((acc, x) => {
       acc.gross += x.gross_pay; acc.deductions += x.total_deductions; acc.net += x.net_pay; return acc;
     }, { gross: 0, deductions: 0, net: 0 });
@@ -989,10 +992,14 @@ async function processPayroll() {
 function roundMoney(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 }
-function getMonthlySalaryBasis(e) {
-  const monthly = Number(e.basic_salary || 0);
+function cleanMoneyNumber(value) {
+  if (value === null || value === undefined) return 0;
+  return Number(String(value).replace(/[^0-9.-]/g, '')) || 0;
+}
+function getMonthlySalaryBasis(e = {}) {
+  const monthly = cleanMoneyNumber(e.basic_salary ?? e.monthly_salary ?? e.salary ?? e.basic_pay);
   if (monthly > 0) return monthly;
-  const daily = Number(e.daily_rate || 0);
+  const daily = cleanMoneyNumber(e.daily_rate);
   const standardDays = Number(state.settings?.standard_days || 26);
   return daily > 0 ? daily * standardDays : 0;
 }
@@ -1112,7 +1119,7 @@ function payrollRunTotals(run) {
 
 
 function getPayrollLocalOptions() {
-  const defaults = { payroll_mode: 'attendance', auto_tax: 'false' };
+  const defaults = { payroll_mode: 'monthly_fixed', auto_tax: 'false' };
   if (!company?.id) return defaults;
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(`e4u_payroll_options_${company.id}`) || '{}') };
@@ -1123,6 +1130,13 @@ function getPayrollLocalOptions() {
 function savePayrollLocalOptions(options) {
   if (!company?.id) return;
   localStorage.setItem(`e4u_payroll_options_${company.id}`, JSON.stringify(options));
+}
+function getCurrentPayrollOptionsFromForm() {
+  const local = getPayrollLocalOptions();
+  return {
+    payroll_mode: document.getElementById('payPayrollMode')?.value || local.payroll_mode || 'monthly_fixed',
+    auto_tax: document.getElementById('payAutoTax')?.value || local.auto_tax || 'false'
+  };
 }
 function adjustmentDefaults() {
   return {
@@ -1191,8 +1205,8 @@ function payrollModeLabel(mode) {
 function getOtherPayFromItem(item) {
   return roundMoney(Number(item.gross_pay || 0) - Number(item.basic_pay || 0) - Number(item.overtime_pay || 0));
 }
-function computePayrollItem(e, start, end) {
-  const options = getPayrollLocalOptions();
+function computePayrollItem(e, start, end, optionsOverride = null) {
+  const options = optionsOverride || getPayrollLocalOptions();
   const allRecords = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end);
   const paidRecords = allRecords.filter(r => isPaidAttendanceStatus(r.status));
   const unpaidRecords = allRecords.filter(r => isUnpaidAttendanceStatus(r.status));
