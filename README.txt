@@ -1,4 +1,4 @@
-E4U HR & Payroll Cloud System v2.6.1 — Production Payroll + Approval Patch
+E4U HR & Payroll Cloud System v2.6.2 — Production Payroll + Approval Patch
 
 UPLOAD TO GITHUB
 1. Upload/replace these files only:
@@ -10,11 +10,11 @@ UPLOAD TO GITHUB
 2. Do NOT replace config.js if your live Supabase login is already working.
 3. After GitHub commit, open the live site and press Ctrl + Shift + R.
 
-WHAT IS NEW IN v2.6.1
-- v2.6.1 Cloud label.
+WHAT IS NEW IN v2.6.2
+- v2.6.2 Cloud label.
 - Payroll approval workflow: Draft, For Review, Approved, Released, Voided.
 - Payroll recompute helper: creates a new recomputation run using the same period.
-- Payroll adjustments can be Supabase-backed when v2.6.1 SQL add-on is installed.
+- Payroll adjustments can be Supabase-backed when v2.6.2 SQL add-on is installed.
 - Browser-safe fallback remains available if the add-on SQL is not installed yet.
 - Audit trail export for payroll actions and workflow changes.
 - Payroll approval register export.
@@ -24,14 +24,20 @@ WHAT IS NEW IN v2.6.1
 
 OPTIONAL PRODUCTION DATABASE UPGRADE
 For database-backed workflow/adjustments/audit logs, run this file in Supabase SQL Editor:
-- supabase-v2.6.1-addon.sql
+- supabase-v2.6.2-addon.sql
 
-The app will not break if you have not run the add-on SQL yet. It will use local browser fallback for the new v2.6.1 features until the tables exist.
+The app will not break if you have not run the add-on SQL yet. It will use local browser fallback for the new v2.6.2 features until the tables exist.
 
 IMPORTANT
 Old payroll runs remain as they were computed. To use updated logic, create a new payroll run.
 
 
-PATCH v2.6.1
+PATCH v2.6.2
 - Fixed logout hang by preventing recursive Supabase signOut/auth-state loop.
 - Updated service worker cache name to force reload.
+
+
+v2.6.2 Payroll Fix:
+- Zero gross pay now forces SSS, PhilHealth, Pag-IBIG, tax, loans, deductions, and net pay to zero in payroll display and reports.
+- Old payroll runs with zero gross but old saved deductions are corrected for display/export; create a new payroll run for final use.
+- Employer share reports also become zero when employee gross pay is zero.

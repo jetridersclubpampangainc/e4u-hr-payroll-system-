@@ -241,7 +241,7 @@ async function loadAllData() {
     state.attendance = attendance || [];
     state.leaves = leaves || [];
     state.payrollRuns = payrollRuns || [];
-    state.payrollItems = payrollItems || [];
+    state.payrollItems = (payrollItems || []).map(normalizePayrollItem);
     await loadProductionAddons();
     document.querySelectorAll('.nav-item').forEach(btn => btn.disabled = false);
     setView(activeView);
@@ -507,7 +507,7 @@ function renderDashboard() {
       <div class="card">
         <h3>Action Items</h3>
         <p>${pendingLeaves ? `${pendingLeaves} pending leave request/s for approval.` : 'No pending leave requests.'}</p>
-        <p>${latestPayroll ? `Latest payroll: ${escapeHtml(latestPayroll.period_label)} — Net Pay ${money(latestPayroll.total_net_pay)}` : 'No payroll run yet.'}</p>
+        <p>${latestPayroll ? `Latest payroll: ${escapeHtml(latestPayroll.period_label)} — Net Pay ${money(payrollRunTotals(latestPayroll).net)}` : 'No payroll run yet.'}</p>
         <div class="toolbar-left">
           <button class="btn primary" onclick="setView('employees')">Add Employees</button>
           <button class="btn secondary" onclick="setView('attendance')">Encode DTR</button>
@@ -894,7 +894,7 @@ function renderPayroll() {
         <p class="small">Mode: <strong>${payrollModeLabel(options.payroll_mode)}</strong> • Auto tax: <strong>${options.auto_tax === 'true' ? 'Enabled' : 'Off'}</strong></p>
         <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.6</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6 adds workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
+      <div class="card"><h3>Payroll Rules v2.6.2</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6.2 adds safe zero-gross payroll guard, workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
     </div>
     <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">v2.6 supports Supabase-backed adjustments when the SQL add-on is installed; otherwise this browser uses safe local fallback for demo/testing.</p>
       ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
@@ -902,7 +902,7 @@ function renderPayroll() {
     <div class="card" style="margin-top:18px;">
       <h3>Payroll Runs</h3>
       ${state.payrollRuns.length ? `<div class="table-wrap"><table><thead><tr><th>Period</th><th>Status</th><th>Date</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Workflow</th></tr></thead><tbody>${state.payrollRuns.map(r => `<tr>
-        <td>${escapeHtml(r.period_label)}</td><td>${payrollStatusBadge(r)}</td><td>${formatDate(r.pay_date)}</td><td>${money(r.total_gross_pay)}</td><td>${money(r.total_deductions)}</td><td><strong>${money(r.total_net_pay)}</strong></td><td class="actions">${payrollWorkflowButtons(r)}</td>
+        <td>${escapeHtml(r.period_label)}</td><td>${payrollStatusBadge(r)}</td><td>${formatDate(r.pay_date)}</td><td>${money(payrollRunTotals(r).gross)}</td><td>${money(payrollRunTotals(r).deductions)}</td><td><strong>${money(payrollRunTotals(r).net)}</strong></td><td class="actions">${payrollWorkflowButtons(r)}</td>
       </tr>`).join('')}</tbody></table></div>` : empty('No payroll run yet.')}
     </div>`;
 }
@@ -1042,6 +1042,7 @@ function computePagibigEmployerShare(monthlySalary) {
   return computePagibigEmployeeShare(monthlySalary);
 }
 function getPayrollEmployerShares(item) {
+  if (!hasGrossEarnings(item)) return { sss_er: 0, ec: 0, philhealth_er: 0, pagibig_er: 0 };
   const emp = getEmployee(item.employee_id) || {};
   const monthlyBasis = getMonthlySalaryBasis(emp);
   return {
@@ -1050,6 +1051,63 @@ function getPayrollEmployerShares(item) {
     philhealth_er: computePhilHealthEmployerShare(monthlyBasis),
     pagibig_er: computePagibigEmployerShare(monthlyBasis)
   };
+}
+
+function hasGrossEarnings(item = {}) {
+  return Number(item.gross_pay || 0) > 0;
+}
+
+function normalizePayrollItem(item = {}) {
+  const normalized = { ...item };
+  const gross = roundMoney(normalized.gross_pay);
+  normalized.days_worked = Number(normalized.days_worked || 0);
+  normalized.overtime_hours = Number(normalized.overtime_hours || 0);
+  normalized.late_minutes = Number(normalized.late_minutes || 0);
+  normalized.undertime_minutes = Number(normalized.undertime_minutes || 0);
+  normalized.basic_pay = roundMoney(normalized.basic_pay);
+  normalized.overtime_pay = roundMoney(normalized.overtime_pay);
+  normalized.gross_pay = gross;
+  normalized.late_deduction = roundMoney(normalized.late_deduction);
+  normalized.undertime_deduction = roundMoney(normalized.undertime_deduction);
+  if (gross <= 0) {
+    normalized.sss = 0;
+    normalized.philhealth = 0;
+    normalized.pagibig = 0;
+    normalized.withholding_tax = 0;
+    normalized.cash_advance = 0;
+    normalized.total_deductions = 0;
+    normalized.net_pay = 0;
+    return normalized;
+  }
+  normalized.sss = roundMoney(normalized.sss);
+  normalized.philhealth = roundMoney(normalized.philhealth);
+  normalized.pagibig = roundMoney(normalized.pagibig);
+  normalized.withholding_tax = roundMoney(normalized.withholding_tax);
+  normalized.cash_advance = roundMoney(normalized.cash_advance);
+  normalized.total_deductions = roundMoney(normalized.total_deductions);
+  normalized.net_pay = roundMoney(Math.max(0, gross - normalized.total_deductions));
+  return normalized;
+}
+
+function payrollRunItems(runId) {
+  return state.payrollItems.filter(i => i.payroll_run_id === runId).map(normalizePayrollItem);
+}
+
+function payrollRunTotals(run) {
+  const items = payrollRunItems(run.id);
+  if (!items.length) {
+    return {
+      gross: roundMoney(run.total_gross_pay),
+      deductions: roundMoney(run.total_deductions),
+      net: roundMoney(run.total_net_pay)
+    };
+  }
+  return items.reduce((acc, i) => {
+    acc.gross = roundMoney(acc.gross + Number(i.gross_pay || 0));
+    acc.deductions = roundMoney(acc.deductions + Number(i.total_deductions || 0));
+    acc.net = roundMoney(acc.net + Number(i.net_pay || 0));
+    return acc;
+  }, { gross: 0, deductions: 0, net: 0 });
 }
 
 
@@ -1166,13 +1224,13 @@ function computePayrollItem(e, start, end) {
   const lateDeduction = roundMoney(lateMins / 60 * hourly);
   const undertimeDeduction = roundMoney((undertimeMins / 60 * hourly) + absentDeduction);
   const gross = roundMoney(basicPay + otPay + holidayPay + restDayPay + allowances);
-  const hasPayrollEarnings = gross > 0 && (paidDays > 0 || options.payroll_mode === 'monthly_fixed' || allowances > 0);
+  const hasPayrollEarnings = gross > 0;
   const sss = hasPayrollEarnings ? computeSSSEmployeeShare(monthlyBasis) : 0;
   const philhealth = hasPayrollEarnings ? computePhilHealthEmployeeShare(monthlyBasis) : 0;
   const pagibig = hasPayrollEarnings ? computePagibigEmployeeShare(monthlyBasis) : 0;
   const taxableMonthly = Math.max(0, gross - sss - philhealth - pagibig);
   const withholdingTax = hasPayrollEarnings && options.auto_tax === 'true' ? monthlyWithholdingTaxEstimate(taxableMonthly) : 0;
-  const cashAdvance = loanDeductions;
+  const cashAdvance = hasPayrollEarnings ? loanDeductions : 0;
   const totalDeductions = hasPayrollEarnings
     ? roundMoney(lateDeduction + undertimeDeduction + sss + philhealth + pagibig + withholdingTax + cashAdvance)
     : 0;
@@ -1185,7 +1243,7 @@ function computePayrollItem(e, start, end) {
 }
 function viewPayrollRun(id) {
   const run = state.payrollRuns.find(r => r.id === id);
-  const items = state.payrollItems.filter(i => i.payroll_run_id === id);
+  const items = payrollRunItems(id);
   const totals = items.reduce((acc, i) => {
     const er = getPayrollEmployerShares(i);
     acc.sss += Number(i.sss || 0); acc.philhealth += Number(i.philhealth || 0); acc.pagibig += Number(i.pagibig || 0);
@@ -1215,7 +1273,7 @@ function renderPayslipList(runId) {
 }
 function payslipHtml(runId) {
   const run = state.payrollRuns.find(r => r.id === runId);
-  const items = state.payrollItems.filter(i => i.payroll_run_id === runId);
+  const items = payrollRunItems(runId);
   return items.map(i => {
     const emp = getEmployee(i.employee_id) || {};
     const otherPay = getOtherPayFromItem(i);
@@ -1337,15 +1395,18 @@ function renderReports() {
 }
 function exportPayrollSummaryCSV() {
   if (!state.payrollRuns.length) return toast('No payroll runs to export.');
-  const rows = state.payrollRuns.map(r => ({
-    period_label: r.period_label,
-    period_start: r.period_start,
-    period_end: r.period_end,
-    pay_date: r.pay_date,
-    total_gross_pay: r.total_gross_pay,
-    total_deductions: r.total_deductions,
-    total_net_pay: r.total_net_pay
-  }));
+  const rows = state.payrollRuns.map(r => {
+    const t = payrollRunTotals(r);
+    return {
+      period_label: r.period_label,
+      period_start: r.period_start,
+      period_end: r.period_end,
+      pay_date: r.pay_date,
+      total_gross_pay: t.gross,
+      total_deductions: t.deductions,
+      total_net_pay: t.net
+    };
+  });
   downloadFile('payroll_summary.csv', toCSV(rows), 'text/csv');
 }
 function exportGovernmentContributionsCSV() {
@@ -1418,9 +1479,9 @@ function exportApprovalRegisterCSV() {
       period_end: r.period_end,
       pay_date: r.pay_date,
       status: payrollStatus(r),
-      total_gross_pay: r.total_gross_pay,
-      total_deductions: r.total_deductions,
-      total_net_pay: r.total_net_pay,
+      total_gross_pay: payrollRunTotals(r).gross,
+      total_deductions: payrollRunTotals(r).deductions,
+      total_net_pay: payrollRunTotals(r).net,
       reviewed_at: wf.reviewed_at || '',
       approved_at: wf.approved_at || '',
       released_at: wf.released_at || '',
