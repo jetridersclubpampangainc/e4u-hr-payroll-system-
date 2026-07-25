@@ -103,8 +103,11 @@ function getEmployeeFullName(emp = {}) {
   return `${emp.first_name || ''} ${emp.middle_name || ''} ${emp.last_name || ''}`.replace(/\s+/g, ' ').trim();
 }
 function employeeOptions(selected = '') {
-  const rows = state.employees.filter(e => e.status === 'Active');
+  const rows = state.employees.filter(isActiveEmployee);
   return rows.map(e => `<option value="${e.id}" ${selected === e.id ? 'selected' : ''}>${escapeHtml(getEmployeeName(e.id))}</option>`).join('');
+}
+function isActiveEmployee(e = {}) {
+  return String(e.status || 'Active').trim().toLowerCase() === 'active';
 }
 
 function setAuthMode(mode) {
@@ -878,7 +881,7 @@ async function saveLeave(id = '') {
 
 function renderPayroll() {
   const options = getPayrollLocalOptions();
-  const adjustmentRows = state.employees.filter(e => String(e.status || '').toLowerCase() === 'active').map(e => {
+  const adjustmentRows = state.employees.filter(isActiveEmployee).map(e => {
     const a = getAdjustment(e.id);
     return `<tr><td>${escapeHtml(getEmployeeName(e.id))}</td><td>${money(totalAllowance(a))}</td><td>${money(totalLoanDeduction(a))}</td><td class="actions"><button class="btn secondary" onclick="openPayrollAdjustmentForm('${e.id}')">Edit</button><button class="btn danger" onclick="clearPayrollAdjustment('${e.id}')">Clear</button></td></tr>`;
   }).join('');
@@ -893,10 +896,10 @@ function renderPayroll() {
           ${selectInput('Payroll Mode', 'payPayrollMode', [['monthly_fixed','Monthly Fixed - use Basic Salary'],['attendance','Attendance-Based - requires DTR'],['daily','Daily Rate - requires DTR']], options.payroll_mode)}
           ${selectInput('Auto Tax', 'payAutoTax', [['false','Off'],['true','On']], options.auto_tax)}
         </div>
-        <p class="small"><strong>v2.6.3 salary guard:</strong> Monthly Fixed computes Basic Salary even if there is no DTR. Attendance-Based/Daily Rate computes zero when no DTR is encoded.</p>
-        <div class="form-actions"><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
+        <p class="small"><strong>v2.6.4 direct salary guard:</strong> Monthly Fixed uses the Basic Salary in Employee Masterfile even when no DTR is encoded.</p>
+        <div class="form-actions"><button class="btn secondary" onclick="previewPayrollSalary()">Preview Salary</button><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.6.3</h3><p>Supports attendance-based, daily-rate, and monthly-fixed payroll modes. DTR statuses include absent, half-day, holiday, leave with pay, and leave without pay. Employee government deductions auto-compute SSS, PhilHealth, and Pag-IBIG when payroll has earnings. Allowances, cash advances, loans, and tax estimates are available under payroll adjustments. v2.6.3 adds direct payroll-mode selection inside payroll processing, fixed salary computation guard, safe zero-gross payroll guard, workflow status, recompute/void controls, audit logs, and optional Supabase-backed payroll adjustments.</p></div>
+      <div class="card"><h3>Payroll Rules v2.6.4</h3><p>Monthly Fixed mode is now forced to read Basic Salary directly from Employee Masterfile. Use Preview Salary before saving to confirm gross pay, deductions, and net pay. Attendance-Based/Daily Rate still require DTR.</p></div>
     </div>
     <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">v2.6 supports Supabase-backed adjustments when the SQL add-on is installed; otherwise this browser uses safe local fallback for demo/testing.</p>
       ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
@@ -961,6 +964,23 @@ async function clearPayrollAdjustment(employeeId) {
   await addAuditLog('PAYROLL_ADJUSTMENT_CLEAR', 'payroll_adjustments', employeeId, {});
   toast('Payroll adjustment cleared.'); renderPayroll();
 }
+
+function previewPayrollSalary() {
+  const start = document.getElementById('payStart').value;
+  const end = document.getElementById('payEnd').value;
+  const options = getCurrentPayrollOptionsFromForm();
+  const employees = state.employees.filter(isActiveEmployee);
+  const items = employees.map(e => options.payroll_mode === 'monthly_fixed' ? computeDirectMonthlyPayrollItem(e, start, end, options) : computePayrollItem(e, start, end, options));
+  const totals = items.reduce((acc, x) => {
+    acc.gross += Number(x.gross_pay || 0);
+    acc.deductions += Number(x.total_deductions || 0);
+    acc.net += Number(x.net_pay || 0);
+    return acc;
+  }, { gross: 0, deductions: 0, net: 0 });
+  const rows = items.map(i => `<tr><td>${escapeHtml(getEmployeeName(i.employee_id))}</td><td>${i.days_worked}</td><td>${money(i.basic_pay)}</td><td>${money(i.gross_pay)}</td><td>${money(i.total_deductions)}</td><td><strong>${money(i.net_pay)}</strong></td></tr>`).join('');
+  modal('Payroll Salary Preview', `<div class="grid three" style="margin-bottom:14px;"><div class="card"><h3>Gross</h3><p>${money(totals.gross)}</p></div><div class="card"><h3>Deductions</h3><p>${money(totals.deductions)}</p></div><div class="card"><h3>Net Pay</h3><p>${money(totals.net)}</p></div></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Days</th><th>Basic Pay</th><th>Gross</th><th>Deductions</th><th>Net</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+}
+
 async function processPayroll() {
   try {
     const start = document.getElementById('payStart').value;
@@ -975,9 +995,16 @@ async function processPayroll() {
       const hasAnyDTR = state.attendance.some(a => a.attendance_date >= start && a.attendance_date <= end);
       if (!hasAnyDTR && !confirm('No DTR found in this period. This will compute zero pay for attendance/daily mode. Continue?')) return;
     }
-    const items = state.employees.filter(e => String(e.status || '').toLowerCase() === 'active').map(e => computePayrollItem(e, start, end, options));
+    const activeEmployees = state.employees.filter(isActiveEmployee);
+    let items = activeEmployees.map(e => computePayrollItem(e, start, end, options));
+    let usedDirectSalaryGuard = false;
+    if (options.payroll_mode === 'monthly_fixed' && items.reduce((sum, x) => sum + Number(x.gross_pay || 0), 0) <= 0 && activeEmployees.some(e => getMonthlySalaryBasis(e) > 0)) {
+      items = activeEmployees.map(e => computeDirectMonthlyPayrollItem(e, start, end, options));
+      usedDirectSalaryGuard = true;
+    }
+    if (!items.length) return toast('No active employees found for payroll. Check Employee Masterfile status.');
     const totals = items.reduce((acc, x) => {
-      acc.gross += x.gross_pay; acc.deductions += x.total_deductions; acc.net += x.net_pay; return acc;
+      acc.gross += Number(x.gross_pay || 0); acc.deductions += Number(x.total_deductions || 0); acc.net += Number(x.net_pay || 0); return acc;
     }, { gross: 0, deductions: 0, net: 0 });
     const run = await sb(supabaseClient.from('payroll_runs').insert({
       company_id: company.id, period_label: periodLabel, period_start: start, period_end: end, pay_date: payDate,
@@ -985,8 +1012,8 @@ async function processPayroll() {
     }).select().single(), 'Cannot create payroll run');
     const rows = items.map(i => ({ ...i, company_id: company.id, payroll_run_id: run.id }));
     if (rows.length) await sb(supabaseClient.from('payroll_items').insert(rows), 'Cannot save payroll items');
-    await addAuditLog('PAYROLL_RUN_CREATED', 'payroll', run.id, { period_label: periodLabel, gross: totals.gross, deductions: totals.deductions, net: totals.net });
-    toast('Payroll run saved.'); await loadAllData(); activeView = 'payroll';
+    await addAuditLog('PAYROLL_RUN_CREATED', 'payroll', run.id, { period_label: periodLabel, gross: totals.gross, deductions: totals.deductions, net: totals.net, direct_salary_guard: usedDirectSalaryGuard });
+    toast(usedDirectSalaryGuard ? 'Payroll saved using direct salary guard.' : 'Payroll run saved.'); await loadAllData(); activeView = 'payroll';
   } catch (error) { toast(error.message); }
 }
 function roundMoney(value) {
@@ -1205,8 +1232,48 @@ function payrollModeLabel(mode) {
 function getOtherPayFromItem(item) {
   return roundMoney(Number(item.gross_pay || 0) - Number(item.basic_pay || 0) - Number(item.overtime_pay || 0));
 }
+
+function computeDirectMonthlyPayrollItem(e, start, end, optionsOverride = null) {
+  const options = optionsOverride || { payroll_mode: 'monthly_fixed', auto_tax: 'false' };
+  const standardDays = Number(state.settings?.standard_days || 26);
+  const monthlyBasis = roundMoney(getMonthlySalaryBasis(e));
+  const daily = roundMoney(cleanMoneyNumber(e.daily_rate) || (monthlyBasis / standardDays));
+  const adj = getAdjustment(e.id);
+  const allowances = totalAllowance(adj);
+  const loanDeductions = totalLoanDeduction(adj);
+  const gross = roundMoney(monthlyBasis + allowances);
+  const hasPayrollEarnings = gross > 0;
+  const sss = hasPayrollEarnings ? computeSSSEmployeeShare(monthlyBasis) : 0;
+  const philhealth = hasPayrollEarnings ? computePhilHealthEmployeeShare(monthlyBasis) : 0;
+  const pagibig = hasPayrollEarnings ? computePagibigEmployeeShare(monthlyBasis) : 0;
+  const taxableMonthly = Math.max(0, gross - sss - philhealth - pagibig);
+  const withholdingTax = hasPayrollEarnings && options.auto_tax === 'true' ? monthlyWithholdingTaxEstimate(taxableMonthly) : 0;
+  const cashAdvance = hasPayrollEarnings ? loanDeductions : 0;
+  const totalDeductions = hasPayrollEarnings ? roundMoney(sss + philhealth + pagibig + withholdingTax + cashAdvance) : 0;
+  const net = roundMoney(Math.max(0, gross - totalDeductions));
+  return {
+    employee_id: e.id,
+    days_worked: monthlyBasis > 0 ? standardDays : 0,
+    overtime_hours: 0,
+    late_minutes: 0,
+    undertime_minutes: 0,
+    basic_pay: monthlyBasis,
+    overtime_pay: 0,
+    gross_pay: gross,
+    late_deduction: 0,
+    undertime_deduction: 0,
+    sss,
+    philhealth,
+    pagibig,
+    withholding_tax: withholdingTax,
+    cash_advance: cashAdvance,
+    total_deductions: totalDeductions,
+    net_pay: net
+  };
+}
 function computePayrollItem(e, start, end, optionsOverride = null) {
   const options = optionsOverride || getPayrollLocalOptions();
+  if (options.payroll_mode === 'monthly_fixed') return computeDirectMonthlyPayrollItem(e, start, end, options);
   const allRecords = state.attendance.filter(a => a.employee_id === e.id && a.attendance_date >= start && a.attendance_date <= end);
   const paidRecords = allRecords.filter(r => isPaidAttendanceStatus(r.status));
   const unpaidRecords = allRecords.filter(r => isUnpaidAttendanceStatus(r.status));
