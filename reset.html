@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>E4U Cache Reset</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#f3f7f4;color:#123;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:20px}.card{background:white;border-radius:18px;padding:28px;max-width:560px;box-shadow:0 10px 30px rgba(0,0,0,.08)}button,a{display:inline-block;margin-top:12px;background:#0f6b3f;color:white;text-decoration:none;border:0;border-radius:10px;padding:12px 16px;font-weight:bold}.small{color:#52615a;font-size:14px;line-height:1.5}.ok{color:#0f6b3f;font-weight:bold}pre{white-space:pre-wrap;background:#eef4f0;padding:10px;border-radius:10px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>E4U Cache Reset</h1>
+    <p id="status">Resetting browser cache and service worker...</p>
+    <p class="small">After reset, click the button below to reopen the HR Payroll app.</p>
+    <a id="openApp" href="./?fresh=264">Open E4U HR Payroll</a>
+    <pre id="log"></pre>
+  </div>
+  <script>
+    const log = msg => document.getElementById('log').textContent += msg + '\n';
+    (async function(){
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          log('Service workers found: ' + regs.length);
+          await Promise.all(regs.map(r => r.unregister()));
+          log('Service workers unregistered.');
+        }
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          log('Caches found: ' + keys.length);
+          await Promise.all(keys.map(k => caches.delete(k)));
+          log('Caches deleted.');
+        }
+        localStorage.removeItem('e4u_force_cache_reset');
+        document.getElementById('status').innerHTML = '<span class="ok">Reset complete.</span>';
+      } catch (err) {
+        document.getElementById('status').textContent = 'Reset attempted. You may still open the app.';
+        log('Warning: ' + (err.message || err));
+      }
+    })();
+  </script>
+</body>
+</html>
