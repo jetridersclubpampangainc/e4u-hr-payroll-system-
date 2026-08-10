@@ -896,10 +896,10 @@ function renderPayroll() {
           ${selectInput('Payroll Mode', 'payPayrollMode', [['monthly_fixed','Monthly Fixed - use Basic Salary'],['attendance','Attendance-Based - requires DTR'],['daily','Daily Rate - requires DTR']], options.payroll_mode)}
           ${selectInput('Auto Tax', 'payAutoTax', [['false','Off'],['true','On']], options.auto_tax)}
         </div>
-        <p class="small"><strong>v2.6.4 direct salary guard:</strong> Monthly Fixed uses the Basic Salary in Employee Masterfile even when no DTR is encoded.</p>
+        <p class="small"><strong>v2.6.7 direct salary guard:</strong> Monthly Fixed uses the Basic Salary in Employee Masterfile even when no DTR is encoded.</p>
         <div class="form-actions"><button class="btn secondary" onclick="previewPayrollSalary()">Preview Salary</button><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div>
       </div>
-      <div class="card"><h3>Payroll Rules v2.6.4</h3><p>Monthly Fixed mode is now forced to read Basic Salary directly from Employee Masterfile. Use Preview Salary before saving to confirm gross pay, deductions, and net pay. Attendance-Based/Daily Rate still require DTR.</p></div>
+      <div class="card"><h3>Payroll Rules v2.6.7</h3><p>Monthly Fixed mode is now forced to read Basic Salary directly from Employee Masterfile. Use Preview Salary before saving to confirm gross pay, deductions, and net pay. Attendance-Based/Daily Rate still require DTR.</p></div>
     </div>
     <div class="card" style="margin-top:18px;"><h3>Payroll Adjustments</h3><p class="small">v2.6 supports Supabase-backed adjustments when the SQL add-on is installed; otherwise this browser uses safe local fallback for demo/testing.</p>
       ${adjustmentRows ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Allowances</th><th>Cash/Loans/Other Deductions</th><th>Action</th></tr></thead><tbody>${adjustmentRows}</tbody></table></div>` : empty('No active employees.')}
@@ -1704,6 +1704,15 @@ document.addEventListener('click', event => {
 });
 
 document.addEventListener('DOMContentLoaded', boot);
+
+// v2.6.7 clean rebuild: remove any old service worker/cache that caused Failed to fetch.
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('service-worker.js').catch(() => {}));
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.getRegistrations()
+      .then(registrations => registrations.forEach(reg => reg.unregister()))
+      .catch(() => {});
+    if (window.caches) {
+      caches.keys().then(keys => keys.forEach(key => caches.delete(key))).catch(() => {});
+    }
+  });
 }
