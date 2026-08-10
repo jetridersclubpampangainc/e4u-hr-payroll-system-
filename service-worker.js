@@ -1,4 +1,4 @@
-const CACHE_NAME = 'e4u-hr-payroll-v2-6-1';
+const CACHE_NAME = 'e4u-hr-payroll-v2-6-4';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './assets/icon.svg'];
 
 self.addEventListener('install', event => {
@@ -20,7 +20,7 @@ self.addEventListener('fetch', event => {
     return;
   }
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-store' })
       .then(response => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
@@ -30,4 +30,4 @@ self.addEventListener('fetch', event => {
   );
 });
 
-// v2.2: SSS + PhilHealth + Pag-IBIG automatic deduction patch, cache refresh
+// v2.6.4: direct salary payroll fix + cache refresh
