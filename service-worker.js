@@ -1,33 +1,19 @@
-const CACHE_NAME = 'e4u-hr-payroll-v2-6-4';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './assets/icon.svg'];
+// v2.6.5: Emergency no-cache service worker reset
+// This removes old cached files that caused Failed to fetch issues.
 
 self.addEventListener('install', event => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+    caches.keys()
+      .then(keys => Promise.all(keys.map(key => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET') return;
-  if (event.request.url.endsWith('/config.js')) {
-    event.respondWith(fetch(event.request, { cache: 'no-store' }));
-    return;
-  }
-  event.respondWith(
-    fetch(event.request, { cache: 'no-store' })
-      .then(response => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
-        return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+  // Do not intercept requests anymore. Let the browser/network handle everything.
+  return;
 });
-
-// v2.6.4: direct salary payroll fix + cache refresh
