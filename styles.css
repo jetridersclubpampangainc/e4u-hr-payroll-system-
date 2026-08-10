@@ -362,3 +362,15 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
 
 .payslip { box-shadow: none; break-inside: avoid; }
 }
+
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: #0f6b3f;
+  font-weight: 800;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn.full { width: 100%; text-align: center; }
+.hidden { display: none !important; }

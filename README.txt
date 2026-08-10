@@ -1,43 +1,47 @@
-E4U HR & Payroll Cloud System v2.6.4 — Production Payroll + Approval Patch
+E4U HR & Payroll Cloud System v2.6.8 Clean Rebuild
+Generated: 2026-08-10
+
+WHAT THIS FIXES
+- Removes old service worker/cache that caused Failed to fetch after updates.
+- Keeps v2.6.4 direct salary payroll guard.
+- Monthly Fixed mode computes Basic Salary even without DTR.
+- Adds reset.html for browser cache cleanup.
+- Does not include config.js to avoid breaking the existing Supabase connection.
 
 UPLOAD TO GITHUB
-1. Upload/replace these files only:
-   - index.html
-   - app.js
-   - styles.css
-   - service-worker.js
-   - README.txt
-2. Do NOT replace config.js if your live Supabase login is already working.
-3. After GitHub commit, open the live site and press Ctrl + Shift + R.
-
-WHAT IS NEW IN v2.6.4
-- v2.6.4 Cloud label.
-- Payroll approval workflow: Draft, For Review, Approved, Released, Voided.
-- Payroll recompute helper: creates a new recomputation run using the same period.
-- Payroll adjustments can be Supabase-backed when v2.6.4 SQL add-on is installed.
-- Browser-safe fallback remains available if the add-on SQL is not installed yet.
-- Audit trail export for payroll actions and workflow changes.
-- Payroll approval register export.
-- Payroll adjustments export.
-- Loan balance starter export.
-- v2.5 payroll compliance retained: payroll modes, DTR statuses, allowances, loans, SSS, PhilHealth, Pag-IBIG, tax estimate, COE, reports.
-
-OPTIONAL PRODUCTION DATABASE UPGRADE
-For database-backed workflow/adjustments/audit logs, run this file in Supabase SQL Editor:
-- supabase-v2.6.4-addon.sql
-
-The app will not break if you have not run the add-on SQL yet. It will use local browser fallback for the new v2.6.4 features until the tables exist.
+Upload/replace these files/folders only:
+- index.html
+- app.js
+- styles.css
+- service-worker.js
+- reset.html
+- README.txt
+- manifest.json
+- assets/
 
 IMPORTANT
-Old payroll runs remain as they were computed. To use updated logic, create a new payroll run.
+DO NOT upload/replace config.js in Jojo's existing repo. The current config.js already contains the Supabase URL and anon public key.
+
+AFTER UPLOAD
+1. Wait 1-3 minutes.
+2. Open: https://jetridersclubpampangainc.github.io/e4u-hr-payroll-system-/reset.html
+3. Wait for Reset complete.
+4. Click Open E4U HR Payroll.
+5. Login with the existing account. Do not use Create Account if the account already exists.
+
+PAYROLL TEST
+1. Go to Payroll.
+2. Set Payroll Mode to Monthly Fixed - use Basic Salary.
+3. Click Preview Salary.
+4. If preview has Gross/Net amounts, click Compute & Save Payroll with a new Period Label.
+
+NOTES
+If Failed to fetch still appears during Login/Create Account, the browser/network cannot reach Supabase. Test by opening the Supabase project URL or try another internet connection/hotspot.
 
 
-PATCH v2.6.4
-- Fixed logout hang by preventing recursive Supabase signOut/auth-state loop.
-- Updated service worker cache name to force reload.
-
-
-v2.6.4 Payroll Fix:
-- Zero gross pay now forces SSS, PhilHealth, Pag-IBIG, tax, loans, deductions, and net pay to zero in payroll display and reports.
-- Old payroll runs with zero gross but old saved deductions are corrected for display/export; create a new payroll run for final use.
-- Employer share reports also become zero when employee gross pay is zero.
+V2.6.8 UPDATE:
+- Added Forgot Password / Send Reset Link to login screen.
+- Added Update Password flow when user opens Supabase reset email link.
+- Keep config.js unchanged.
+- In Supabase Authentication URL settings, add this redirect URL if password reset link does not return to the app:
+  https://jetridersclubpampangainc.github.io/e4u-hr-payroll-system-/

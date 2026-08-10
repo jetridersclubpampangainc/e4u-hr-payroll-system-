@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0f6b3f" />
   <title>E4U HR & Payroll Cloud System</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="styles.css?v=267" />
+  <link rel="stylesheet" href="styles.css?v=268" />
 </head>
 <body>
   <div id="authScreen" class="auth-screen hidden">
@@ -29,15 +29,16 @@
         <label id="fullNameWrap" class="hidden">Full Name
           <input type="text" id="authFullName" placeholder="Juan Dela Cruz" />
         </label>
-        <label>Email
+        <label id="emailWrap">Email
           <input type="email" id="authEmail" placeholder="admin@company.com" required />
         </label>
-        <label>Password
+        <label id="passwordWrap">Password
           <input type="password" id="authPassword" placeholder="Minimum 6 characters" required minlength="6" />
         </label>
         <button class="btn primary full" id="authSubmitBtn" type="submit">Login</button>
       </form>
-      <p class="small center">First registered user will become <strong>Super Admin</strong>.</p>
+      <button class="link-btn full" id="forgotPasswordBtn" onclick="setAuthMode('forgot')">Forgot Password?</button>
+      <p class="small center" id="authHelpText">First registered user will become <strong>Super Admin</strong>.</p>
     </div>
   </div>
 
@@ -47,7 +48,7 @@
         <div class="brand-mark">E4U</div>
         <div>
           <h1>HR & Payroll</h1>
-          <p>v2.6.7 Cloud</p>
+          <p>v2.6.8 Cloud</p>
         </div>
       </div>
 
@@ -120,6 +121,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=267"></script>
+  <script src="app.js?v=268"></script>
 </body>
 </html>

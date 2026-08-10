@@ -112,10 +112,57 @@ function isActiveEmployee(e = {}) {
 
 function setAuthMode(mode) {
   authMode = mode;
-  document.getElementById('loginTab').classList.toggle('active', mode === 'login');
-  document.getElementById('signupTab').classList.toggle('active', mode === 'signup');
-  document.getElementById('fullNameWrap').classList.toggle('hidden', mode !== 'signup');
-  document.getElementById('authSubmitBtn').textContent = mode === 'login' ? 'Login' : 'Create Account';
+  const loginTab = document.getElementById('loginTab');
+  const signupTab = document.getElementById('signupTab');
+  const fullNameWrap = document.getElementById('fullNameWrap');
+  const emailWrap = document.getElementById('emailWrap');
+  const passwordWrap = document.getElementById('passwordWrap');
+  const emailInput = document.getElementById('authEmail');
+  const passwordInput = document.getElementById('authPassword');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const forgotBtn = document.getElementById('forgotPasswordBtn');
+  const helpText = document.getElementById('authHelpText');
+
+  loginTab?.classList.toggle('active', mode === 'login');
+  signupTab?.classList.toggle('active', mode === 'signup');
+  fullNameWrap?.classList.toggle('hidden', mode !== 'signup');
+  emailWrap?.classList.toggle('hidden', mode === 'update_password');
+  passwordWrap?.classList.toggle('hidden', mode === 'forgot');
+  if (emailInput) emailInput.required = mode !== 'update_password';
+  if (passwordInput) {
+    passwordInput.required = mode !== 'forgot';
+    passwordInput.placeholder = mode === 'update_password' ? 'New password, minimum 6 characters' : 'Minimum 6 characters';
+    if (mode === 'forgot') passwordInput.value = '';
+  }
+  if (forgotBtn) forgotBtn.classList.toggle('hidden', mode === 'forgot' || mode === 'update_password');
+
+  const labels = {
+    login: 'Login',
+    signup: 'Create Account',
+    forgot: 'Send Reset Link',
+    update_password: 'Update Password'
+  };
+  if (submitBtn) submitBtn.textContent = labels[mode] || 'Login';
+  if (helpText) {
+    helpText.innerHTML = mode === 'forgot'
+      ? 'Enter your registered email. Supabase will send a password reset link.'
+      : mode === 'update_password'
+        ? 'Enter your new password after opening the reset link from email.'
+        : 'First registered user will become <strong>Super Admin</strong>.';
+  }
+}
+
+function passwordResetRedirectUrl() {
+  const base = `${window.location.origin}${window.location.pathname}`;
+  return `${base}?resetPassword=1`;
+}
+
+function showPasswordResetScreen() {
+  const appShell = document.getElementById('appShell');
+  const authScreen = document.getElementById('authScreen');
+  if (appShell) appShell.classList.add('hidden');
+  if (authScreen) authScreen.classList.remove('hidden');
+  setAuthMode('update_password');
 }
 
 async function handleAuthSubmit(event) {
@@ -128,17 +175,35 @@ async function handleAuthSubmit(event) {
     if (authMode === 'login') {
       await sb(supabaseClient.auth.signInWithPassword({ email, password }), 'Login failed');
       toast('Logged in.');
-    } else {
+      await boot();
+      return;
+    }
+    if (authMode === 'signup') {
       await sb(supabaseClient.auth.signUp({
         email,
         password,
         options: { data: { full_name: fullName || email.split('@')[0] } }
       }), 'Signup failed');
       toast('Account created. Check email if confirmation is enabled.');
+      await boot();
+      return;
     }
-    await boot();
+    if (authMode === 'forgot') {
+      await sb(supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: passwordResetRedirectUrl() }), 'Cannot send reset email');
+      toast('Password reset link sent. Check your email.');
+      setAuthMode('login');
+      return;
+    }
+    if (authMode === 'update_password') {
+      await sb(supabaseClient.auth.updateUser({ password }), 'Cannot update password');
+      toast('Password updated. Login again.');
+      try { await supabaseClient.auth.signOut(); } catch (_) {}
+      showLoggedOutScreen();
+      setAuthMode('login');
+      return;
+    }
   } catch (error) {
-    toast(error.message);
+    toast(error.message || 'Request failed. Check internet/Supabase connection.');
   }
 }
 
@@ -175,8 +240,24 @@ async function boot() {
     document.getElementById('authScreen').classList.remove('hidden');
     return;
   }
+  if (authSubscription?.unsubscribe) authSubscription.unsubscribe();
+  const { data: authListener } = supabaseClient.auth.onAuthStateChange((event, nextSession) => {
+    session = nextSession;
+    if (event === 'PASSWORD_RECOVERY') {
+      showPasswordResetScreen();
+      return;
+    }
+    if (!nextSession) showLoggedOutScreen();
+  });
+  authSubscription = authListener?.subscription || null;
+
   const { data } = await supabaseClient.auth.getSession();
   session = data.session;
+  const isResetPasswordReturn = new URLSearchParams(window.location.search).get('resetPassword') === '1' || window.location.hash.includes('type=recovery');
+  if (isResetPasswordReturn && session) {
+    showPasswordResetScreen();
+    return;
+  }
   if (!session) {
     document.getElementById('authScreen').classList.remove('hidden');
     document.getElementById('appShell').classList.add('hidden');
@@ -185,12 +266,6 @@ async function boot() {
   document.getElementById('authScreen').classList.add('hidden');
   document.getElementById('appShell').classList.remove('hidden');
   await loadAllData();
-  if (authSubscription?.unsubscribe) authSubscription.unsubscribe();
-  const { data: authListener } = supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
-    session = nextSession;
-    if (!nextSession) showLoggedOutScreen();
-  });
-  authSubscription = authListener?.subscription || null;
 }
 
 async function loadProfile() {
