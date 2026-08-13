@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>E4U HR Payroll Demo Mode</title>
+<style>
+:root{--green:#0f6b3f;--dark:#083f29;--light:#eef9f3;--line:#cfe5d8;--muted:#64748b;--danger:#b42318}*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--light);color:#102018}.shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.side{background:#074529;color:white;padding:24px;display:flex;flex-direction:column;gap:18px}.brand{display:flex;gap:12px;align-items:center}.logo{background:#14a35a;border-radius:14px;padding:13px 10px;font-weight:800}.brand h1{font-size:20px;margin:0}.brand p{margin:4px 0 0;color:#bde7ce}.user{border:1px solid rgba(255,255,255,.25);border-radius:16px;padding:14px}.nav button{display:block;width:100%;text-align:left;margin:7px 0;padding:13px;border:0;border-radius:12px;background:transparent;color:white;font-weight:700;cursor:pointer}.nav button.active,.nav button:hover{background:rgba(255,255,255,.14)}.main{padding:28px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:22px}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--green);font-weight:800}.card{background:white;border:1px solid var(--line);border-radius:18px;padding:20px;margin-bottom:18px;box-shadow:0 8px 24px rgba(12,80,49,.06)}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.btn{border:0;border-radius:12px;padding:12px 16px;font-weight:800;cursor:pointer}.primary{background:#0f7a46;color:white}.secondary{background:#e8f5ee;color:#0f6b3f}.danger{background:#ffe1df;color:var(--danger)}input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:12px;font-weight:700;background:white}label{font-weight:800;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:12px;text-transform:uppercase;color:var(--muted)}.badge{background:#e8f5ee;color:#0f6b3f;border-radius:999px;padding:6px 10px;font-weight:800;font-size:12px}.hide{display:none}.toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.toolbar>*{min-width:180px}.num{text-align:right;font-weight:800}.note{color:var(--muted);font-size:13px}.payslip{border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:14px;background:#fff}.kv{display:grid;grid-template-columns:1fr auto;gap:8px}.toast{position:fixed;right:20px;bottom:20px;background:#0b2518;color:white;padding:14px 18px;border-radius:14px;opacity:0;transition:.2s}.toast.show{opacity:1}@media(max-width:900px){.shell{grid-template-columns:1fr}.side{position:static}.grid,.grid.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="logo">E4U</div><div><h1>HR & Payroll</h1><p>v2.6.9 Demo Mode</p></div></div>
+    <div class="user"><strong>JOJO POLICARPIO</strong><br><span>Demo Super Admin</span><p class="note" style="color:#bde7ce">No Supabase login required</p></div>
+    <nav class="nav">
+      <button class="active" onclick="show('dash',this)">Dashboard</button>
+      <button onclick="show('employees',this)">Employee Masterfile</button>
+      <button onclick="show('payroll',this)">Payroll</button>
+      <button onclick="show('payslips',this)">Payslips</button>
+      <button onclick="show('reports',this)">Reports</button>
+    </nav>
+    <button class="btn secondary" onclick="resetDemo()">Reset Demo Data</button>
+    <a class="btn danger" style="text-align:center;text-decoration:none" href="./?fresh=268">Back to Cloud Login</a>
+  </aside>
+  <main class="main">
+    <div class="top"><div><div class="eyebrow">Unified HR • Timekeeping • Payroll</div><h2 id="title">Dashboard</h2></div><button class="btn primary" onclick="window.print()">Print</button></div>
+    <section id="dash" class="view"></section>
+    <section id="employees" class="view hide"></section>
+    <section id="payroll" class="view hide"></section>
+    <section id="payslips" class="view hide"></section>
+    <section id="reports" class="view hide"></section>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+const KEY='e4u_demo_269';
+let db=load();
+function seed(){return{company:{name:'E4 U EDUCATION ACADEMY INC.',address:'LOT 1 14 BLOCK 23 SUNSET VALLEY CUTCUT ANGELES CITY PAMPANGA'},employees:[
+{id:'e1',no:'EMP-0001',last:'APIL',first:'CAMILLE JOY AQUINO',position:'TEACHER',department:'ACADEMIC',date:'2023-10-12',salary:15000,daily:576.92,status:'Active'},
+{id:'e2',no:'EMP-0002',last:'CABILES',first:'RICHARD BON',position:'TEACHER',department:'ACADEMIC',date:'2023-05-23',salary:14000,daily:538.46,status:'Active'},
+{id:'e3',no:'EMP-0003',last:'CASINO',first:'DARHYL LAZA',position:'TEACHER',department:'ACADEMIC',date:'2023-06-02',salary:14000,daily:538.46,status:'Active'},
+{id:'e4',no:'EMP-0006',last:'DANCEL',first:'EDNA DULAY',position:'TEACHER',department:'ACADEMIC',date:'2023-05-23',salary:14500,daily:557.69,status:'Active'},
+{id:'e5',no:'EMP-0004',last:'DE VERA',first:'KARLA MAE ABALOS',position:'TEACHER',department:'ACADEMIC',date:'2023-10-12',salary:12500,daily:480.77,status:'Active'}],runs:[],items:[]}}
+function load(){try{return JSON.parse(localStorage.getItem(KEY))||seed()}catch(e){return seed()}}
+function save(){localStorage.setItem(KEY,JSON.stringify(db))}
+function money(n){return Number(n||0).toLocaleString('en-PH',{style:'currency',currency:'PHP'})}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
+function show(id,btn){document.querySelectorAll('.view').forEach(v=>v.classList.add('hide'));document.getElementById(id).classList.remove('hide');document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));if(btn)btn.classList.add('active');document.getElementById('title').textContent={dash:'Dashboard',employees:'Employee Masterfile',payroll:'Payroll Processing',payslips:'Payslips',reports:'Reports'}[id];renderAll()}
+function name(e){return `${e.last}, ${e.first}`}
+function sss(s){if(s<=0)return 0;let m=Math.min(35000,Math.max(5000,Math.round(s/500)*500));return +(m*.05).toFixed(2)}
+function phil(s){if(s<=0)return 0;let b=Math.min(100000,Math.max(10000,s));return +(b*.025).toFixed(2)}
+function pagibig(s){if(s<=0)return 0;return Math.min(200,+(s*.02).toFixed(2))}
+function computeItem(e,runId){let gross=Number(e.salary||0), a=sss(gross), b=phil(gross), c=pagibig(gross), ded=a+b+c, net=Math.max(0,gross-ded);return{runId,empId:e.id,days:26,basic:gross,gross,sss:a,phil:b,pagibig:c,deductions:ded,net}}
+function processPayroll(){const label=document.getElementById('periodLabel').value||'Payroll Demo';const payDate=document.getElementById('payDate').value||new Date().toISOString().slice(0,10);const runId='r'+Date.now();const items=db.employees.filter(e=>e.status==='Active').map(e=>computeItem(e,runId));const run={id:runId,label,payDate,gross:items.reduce((s,i)=>s+i.gross,0),deductions:items.reduce((s,i)=>s+i.deductions,0),net:items.reduce((s,i)=>s+i.net,0),status:'Draft'};db.runs.unshift(run);db.items.push(...items);save();toast('Payroll saved in Demo Mode.');renderAll();show('payroll',document.querySelectorAll('.nav button')[2])}
+function addEmp(){const no=document.getElementById('empNo').value;const full=document.getElementById('empName').value;const salary=Number(document.getElementById('empSalary').value||0);if(!no||!full||!salary)return toast('Complete employee no, name, salary.');const parts=full.split(',');db.employees.push({id:'e'+Date.now(),no,last:(parts[0]||full).trim().toUpperCase(),first:(parts[1]||'').trim().toUpperCase(),position:'TEACHER',department:'ACADEMIC',date:new Date().toISOString().slice(0,10),salary,daily:+(salary/26).toFixed(2),status:'Active'});save();toast('Employee added.');renderAll()}
+function delEmp(id){db.employees=db.employees.filter(e=>e.id!==id);save();renderAll()}
+function renderDash(){document.getElementById('dash').innerHTML=`<div class="grid"><div class="card"><h3>Employees</h3><h1>${db.employees.length}</h1></div><div class="card"><h3>Payroll Runs</h3><h1>${db.runs.length}</h1></div><div class="card"><h3>Latest Net Pay</h3><h1>${money(db.runs[0]?.net||0)}</h1></div></div><div class="card"><h3>Demo Mode Notice</h3><p>This live demo runs without Supabase Auth. Data is saved only in this browser localStorage. Use this for client demo while Supabase connection is being checked.</p></div>`}
+function renderEmployees(){document.getElementById('employees').innerHTML=`<div class="card"><h3>Add Employee</h3><div class="toolbar"><label>Employee ID<input id="empNo" placeholder="EMP-0007"></label><label>Name<input id="empName" placeholder="LAST, FIRST"></label><label>Basic Salary<input id="empSalary" type="number" placeholder="15000"></label><button class="btn primary" onclick="addEmp()">Add</button></div></div><div class="card"><h3>Employee List</h3><table><thead><tr><th>ID</th><th>Name</th><th>Position</th><th>Date Hired</th><th>Salary</th><th>Status</th><th></th></tr></thead><tbody>${db.employees.map(e=>`<tr><td>${e.no}</td><td><strong>${name(e)}</strong></td><td>${e.position}</td><td>${e.date}</td><td>${money(e.salary)}</td><td><span class="badge">${e.status}</span></td><td><button class="btn danger" onclick="delEmp('${e.id}')">Delete</button></td></tr>`).join('')}</tbody></table></div>`}
+function renderPayroll(){document.getElementById('payroll').innerHTML=`<div class="card"><h3>Process Payroll</h3><div class="toolbar"><label>Period Label<input id="periodLabel" value="Payroll July 2026 Demo"></label><label>Pay Date<input id="payDate" type="date" value="2026-07-26"></label><label>Payroll Mode<select><option>Monthly Fixed - use Basic Salary</option></select></label><button class="btn secondary" onclick="previewPayroll()">Preview Salary</button><button class="btn primary" onclick="processPayroll()">Compute & Save Payroll</button></div><p class="note">Demo mode computes monthly fixed salary even with no DTR.</p></div><div class="card"><h3>Payroll Runs</h3><table><thead><tr><th>Period</th><th>Date</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Status</th></tr></thead><tbody>${db.runs.map(r=>`<tr><td>${r.label}</td><td>${r.payDate}</td><td>${money(r.gross)}</td><td>${money(r.deductions)}</td><td><strong>${money(r.net)}</strong></td><td><span class="badge">${r.status}</span></td></tr>`).join('')||'<tr><td colspan="6">No payroll run yet.</td></tr>'}</tbody></table></div>`}
+function previewPayroll(){const items=db.employees.filter(e=>e.status==='Active').map(e=>computeItem(e,'preview'));let html=`<div class="card"><h3>Salary Preview</h3><table><thead><tr><th>Employee</th><th>Basic</th><th>SSS</th><th>PhilHealth</th><th>Pag-IBIG</th><th>Net</th></tr></thead><tbody>${items.map(i=>{let e=db.employees.find(x=>x.id===i.empId);return`<tr><td>${name(e)}</td><td>${money(i.basic)}</td><td>${money(i.sss)}</td><td>${money(i.phil)}</td><td>${money(i.pagibig)}</td><td><strong>${money(i.net)}</strong></td></tr>`}).join('')}</tbody></table></div>`;document.getElementById('payroll').insertAdjacentHTML('afterbegin',html);toast('Preview ready.')}
+function renderPayslips(){const r=db.runs[0];if(!r){document.getElementById('payslips').innerHTML='<div class="card">No payroll run yet.</div>';return}const items=db.items.filter(i=>i.runId===r.id);document.getElementById('payslips').innerHTML=items.map(i=>{let e=db.employees.find(x=>x.id===i.empId)||{};return`<div class="payslip"><h3>${db.company.name}</h3><p>${db.company.address}</p><hr><div class="grid two"><div><strong>${name(e)}</strong><br>${e.position||''}<br><br>Pay Date: ${r.payDate}<br>Days Paid: ${i.days}</div><div class="kv"><span>Basic Pay</span><strong>${money(i.basic)}</strong><span>Gross Pay</span><strong>${money(i.gross)}</strong><span>SSS</span><strong>${money(i.sss)}</strong><span>PhilHealth</span><strong>${money(i.phil)}</strong><span>Pag-IBIG</span><strong>${money(i.pagibig)}</strong><span>Total Deductions</span><strong>${money(i.deductions)}</strong><span>NET PAY</span><strong>${money(i.net)}</strong></div></div></div>`}).join('')}
+function renderReports(){document.getElementById('reports').innerHTML=`<div class="grid"><div class="card"><h3>Payroll Summary</h3><button class="btn primary" onclick="downloadPayroll()">Download CSV</button></div><div class="card"><h3>Employee List</h3><button class="btn primary" onclick="downloadEmployees()">Download CSV</button></div><div class="card"><h3>Backup JSON</h3><button class="btn primary" onclick="downloadBackup()">Download JSON</button></div></div>`}
+function csv(rows){if(!rows.length)return'';const h=Object.keys(rows[0]);return [h.join(','),...rows.map(r=>h.map(k=>`"${String(r[k]??'').replace(/"/g,'""')}"`).join(','))].join('\n')}
+function dl(fn,txt,type='text/plain'){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type}));a.download=fn;a.click()}
+function downloadPayroll(){dl('payroll_summary_demo.csv',csv(db.runs),'text/csv')}
+function downloadEmployees(){dl('employees_demo.csv',csv(db.employees),'text/csv')}
+function downloadBackup(){dl('e4u_demo_backup.json',JSON.stringify(db,null,2),'application/json')}
+function resetDemo(){localStorage.removeItem(KEY);db=seed();save();renderAll();toast('Demo data reset.')}
+function renderAll(){renderDash();renderEmployees();renderPayroll();renderPayslips();renderReports()}
+renderAll();
+</script>
+</body>
+</html>
